@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -132,12 +133,43 @@ class OrderBook {
   /// exhausted.
   void rest(OrderId id, Side side, Price price, Qty qty);
 
+  // Listener callbacks are routed through these helpers so the reentrancy
+  // guard is armed for exactly as long as a callback is in flight.
+  void notify_accept(OrderId id);
+  void notify_reject(OrderId id, RejectReason reason);
+  void notify_trade(OrderId maker_id, OrderId taker_id, Price price, Qty qty);
+  void notify_cancel(OrderId id, Qty cancelled_qty);
+  void notify_modify(OrderId id, Price price, Qty new_qty);
+  void notify_book_update(Side side, Price price, Qty new_level_qty);
+
+  /// Asserts in debug builds that a listener callback does not call back into
+  /// the book.
+  class CallbackScope {
+   public:
+    explicit CallbackScope(OrderBook& book) noexcept : book_(book) {
+      assert(!book_.in_callback_ && "reentrancy: a listener callback called back into the book");
+      book_.in_callback_ = true;
+    }
+    ~CallbackScope() { book_.in_callback_ = false; }
+
+    CallbackScope(const CallbackScope&) = delete;
+    CallbackScope& operator=(const CallbackScope&) = delete;
+    CallbackScope(CallbackScope&&) = delete;
+    CallbackScope& operator=(CallbackScope&&) = delete;
+
+   private:
+    OrderBook& book_;
+  };
+
+  friend struct OrderBookTestAccess;
+
   Config config_;
   Listener& listener_;
   ObjectPool<OrderNode> orders_;
   IdMap ids_;
   PriceLadder bids_;
   PriceLadder asks_;
+  bool in_callback_ = false;
 };
 
 }  // namespace lob
