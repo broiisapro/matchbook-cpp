@@ -17,9 +17,9 @@ namespace {
 
 using lob::OrderBook;
 
-/// Maker quantity used by the crossing fixtures: deep enough that a whole
-/// timed run eats the front of a level without ever emptying it, so the timed
-/// path always sweeps exactly the advertised number of levels.
+/// Maker quantity for levels that must stay alive for a whole timed run: the
+/// backstop third level of the crossing fixture (only ever partially filled)
+/// and the deep bid/ask of the mixed fixture.
 constexpr Qty kDeepQty = 1'000'000'000'000LL;
 
 constexpr Price kAskBase = 1001;  // crossing fixtures use 1001, 1002, 1003
