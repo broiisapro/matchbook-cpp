@@ -103,6 +103,16 @@ class OrderBook {
   PriceLadder& ladder(Side side) { return side == Side::Buy ? bids_ : asks_; }
   const PriceLadder& ladder(Side side) const { return side == Side::Buy ? bids_ : asks_; }
 
+  /// Places an order whose validation has already passed: emits on_accept,
+  /// matches, then rests a limit remainder under the capacity rules or
+  /// cancels a market/IOC remainder. Shared by submit and by modify's
+  /// cancel + new path.
+  void place(OrderId id, Side side, OrderType type, Price price, Qty qty);
+
+  /// Removes a live order: on_cancel(id, remaining), unlink (which emits
+  /// on_book_update), id map erase and pool release.
+  void remove_live(std::uint32_t index);
+
   /// Fills the taker against the best opposite levels while they cross.
   /// Emits on_trade (at the maker's resting price) followed by
   /// on_book_update for the maker's level; fully filled makers leave the book

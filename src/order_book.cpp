@@ -32,6 +32,61 @@ void OrderBook::submit(OrderId id, Side side, OrderType type, Price price, Qty q
     return;
   }
 
+  place(id, side, type, price, qty);
+}
+
+void OrderBook::cancel(OrderId id) {
+  const std::uint32_t index = ids_.find(id);
+  if (index == IdMap::kNull) {
+    listener_.on_reject(id, RejectReason::UnknownOrder);
+    return;
+  }
+
+  remove_live(index);
+}
+
+void OrderBook::modify(OrderId id, Price new_price, Qty new_qty) {
+  const std::uint32_t index = ids_.find(id);
+  if (index == IdMap::kNull) {
+    listener_.on_reject(id, RejectReason::UnknownOrder);
+    return;
+  }
+  if (new_qty <= 0) {
+    listener_.on_reject(id, RejectReason::InvalidQuantity);
+    return;
+  }
+  if (new_price < config_.min_price || new_price > config_.max_price) {
+    listener_.on_reject(id, RejectReason::InvalidPrice);
+    return;
+  }
+
+  OrderNode& node = orders_[index];
+  const Side side = node.side;
+  const Price old_price = node.price;
+  const Qty remaining = node.qty;
+
+  if (new_price == old_price) {
+    if (new_qty == remaining) {
+      listener_.on_reject(id, RejectReason::ModifyNoChange);
+      return;
+    }
+    if (new_qty < remaining) {
+      PriceLadder& book = ladder(side);
+      Level* level = book.find(old_price);
+      assert(level != nullptr && "every live order sits on an existing level");
+      listener_.on_modify(id, old_price, new_qty);
+      level->total_qty -= remaining - new_qty;
+      node.qty = new_qty;
+      listener_.on_book_update(side, old_price, level->total_qty);
+      return;
+    }
+  }
+
+  remove_live(index);
+  place(id, side, OrderType::Limit, new_price, new_qty);
+}
+
+void OrderBook::place(OrderId id, Side side, OrderType type, Price price, Qty qty) {
   listener_.on_accept(id);
 
   Qty remaining = qty;
@@ -54,22 +109,14 @@ void OrderBook::submit(OrderId id, Side side, OrderType type, Price price, Qty q
   }
 }
 
-void OrderBook::cancel(OrderId id) {
-  const std::uint32_t index = ids_.find(id);
-  if (index == IdMap::kNull) {
-    listener_.on_reject(id, RejectReason::UnknownOrder);
-    return;
-  }
-
-  const Qty remaining = orders_[index].qty;
+void OrderBook::remove_live(std::uint32_t index) {
+  OrderNode& node = orders_[index];
+  const OrderId id = node.id;
+  const Qty remaining = node.qty;
   listener_.on_cancel(id, remaining);
   unlink(index);
   ids_.erase(id);
   orders_.release(index);
-}
-
-void OrderBook::modify(OrderId, Price, Qty) {
-  // Modify semantics land with the modify change.
 }
 
 std::optional<Price> OrderBook::best_bid() const { return bids_.best_price(); }

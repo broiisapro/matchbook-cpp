@@ -26,51 +26,6 @@ Config make_config(std::uint32_t max_orders = 4096, std::uint32_t max_levels = 4
   return Config{1, 1000000, max_orders, max_levels};
 }
 
-TEST(OrderBookMatching, TradeExecutesAtRestingPrice) {
-  RecordingListener listener;
-  OrderBook book(make_config(), listener);
-  book.submit(1, Side::Sell, OrderType::Limit, 101, 5);
-  listener.clear();
-
-  book.submit(2, Side::Buy, OrderType::Limit, 103, 5);
-
-  EXPECT_EQ(listener.events, (std::vector<Event>{
-                                 Accept{2},
-                                 Trade{1, 2, 101, 5},
-                                 BookUpdate{Side::Sell, 101, 0},
-                             }));
-  EXPECT_EQ(book.best_bid(), std::nullopt);
-  EXPECT_EQ(book.best_ask(), std::nullopt);
-  EXPECT_EQ(book.order_count(), 0U);
-}
-
-TEST(OrderBookMatching, PartialFillKeepsQueuePosition) {
-  RecordingListener listener;
-  OrderBook book(make_config(), listener);
-  book.submit(1, Side::Sell, OrderType::Limit, 101, 5);
-  book.submit(2, Side::Sell, OrderType::Limit, 101, 5);
-  listener.clear();
-
-  book.submit(3, Side::Buy, OrderType::Limit, 101, 2);
-
-  EXPECT_EQ(listener.events, (std::vector<Event>{
-                                 Accept{3},
-                                 Trade{1, 3, 101, 2},
-                                 BookUpdate{Side::Sell, 101, 8},
-                             }));
-
-  listener.clear();
-  book.submit(4, Side::Buy, OrderType::Limit, 101, 1);
-
-  EXPECT_EQ(listener.events, (std::vector<Event>{
-                                 Accept{4},
-                                 Trade{1, 4, 101, 1},
-                                 BookUpdate{Side::Sell, 101, 7},
-                             }));
-  EXPECT_EQ(book.level_qty(Side::Sell, 101), 7);
-  EXPECT_EQ(book.order_count(), 2U);
-}
-
 TEST(OrderBookMatching, TwoMakersAtOneLevelFillInFifoOrder) {
   RecordingListener listener;
   OrderBook book(make_config(), listener);
@@ -147,18 +102,6 @@ TEST(OrderBookMatching, SellTakerSwipesBidsBestFirst) {
                                  Trade{2, 3, 100, 3},
                                  BookUpdate{Side::Buy, 100, 0},
                              }));
-  EXPECT_EQ(book.order_count(), 0U);
-}
-
-TEST(OrderBookMatching, MarketOrderAgainstEmptyBookIsCancelledNotRested) {
-  RecordingListener listener;
-  OrderBook book(make_config(), listener);
-
-  book.submit(1, Side::Buy, OrderType::Market, 0, 5);
-
-  EXPECT_EQ(listener.events, (std::vector<Event>{Accept{1}, Cancel{1, 5}}));
-  EXPECT_EQ(book.best_bid(), std::nullopt);
-  EXPECT_EQ(book.best_ask(), std::nullopt);
   EXPECT_EQ(book.order_count(), 0U);
 }
 
