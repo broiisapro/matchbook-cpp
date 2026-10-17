@@ -13,9 +13,7 @@ namespace {
 /// 10 ms in nanoseconds: the ceiling of the HDR range (1 ns .. 10 ms).
 constexpr std::int64_t kHighestTrackableNs = 10'000'000;
 
-/// Records one sample of `elapsed` counter ticks covering `ops` operations.
-/// The timer overhead is subtracted before dividing, so both modes report the
-/// per-operation time; the result is quantized to whole nanoseconds.
+/// Records one whole-nanosecond sample, clamped at zero.
 void record_ns(hdr_histogram* histogram, double ns) {
   std::int64_t value = static_cast<std::int64_t>(std::llround(ns));
   if (value < 0) {
