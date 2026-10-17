@@ -69,6 +69,12 @@ file(GLOB LOB_BENCH_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/bench/*.cpp")
 add_executable(lob_bench ${LOB_BENCH_SOURCES})
 target_include_directories(lob_bench PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+# The JSON context records the compiler flags this binary was built with.
+string(TOUPPER "${CMAKE_BUILD_TYPE}" LOB_BENCH_BUILD_TYPE)
+string(STRIP "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${LOB_BENCH_BUILD_TYPE}}"
+       LOB_BENCH_BUILD_FLAGS)
+target_compile_definitions(lob_bench PRIVATE
+                           "LOB_BENCH_BUILD_FLAGS=\"${LOB_BENCH_BUILD_FLAGS}\"")
 target_link_libraries(lob_bench PRIVATE lob benchmark::benchmark
                                        hdr_histogram::hdr_histogram_static)
 
