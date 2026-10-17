@@ -6,7 +6,11 @@
 #include <span>
 
 #include "lob/config.hpp"
+#include "lob/id_map.hpp"
+#include "lob/intrusive_list.hpp"
 #include "lob/listener.hpp"
+#include "lob/pool.hpp"
+#include "lob/price_ladder.hpp"
 #include "lob/types.hpp"
 
 namespace lob {
@@ -84,9 +88,38 @@ class OrderBook {
   std::uint64_t digest() const;
 
  private:
-  // Frozen members; the Epic 1 implementation reads them.
-  [[maybe_unused]] Config config_;
-  [[maybe_unused]] Listener& listener_;
+  /// One resting order. prev/next are pool indices of the FIFO neighbours.
+  struct OrderNode {
+    OrderId id = 0;
+    Price price = 0;
+    Qty qty = 0;
+    Side side = Side::Buy;
+    std::uint32_t prev = kNullIndex;
+    std::uint32_t next = kNullIndex;
+  };
+
+  using OrderFifo = IntrusiveList<OrderNode, &OrderNode::prev, &OrderNode::next>;
+
+  PriceLadder& ladder(Side side) { return side == Side::Buy ? bids_ : asks_; }
+  const PriceLadder& ladder(Side side) const { return side == Side::Buy ? bids_ : asks_; }
+
+  /// Removes a live node from its level: unlinks it from the FIFO, updates the
+  /// level aggregates, erases the level when it becomes empty and emits
+  /// on_book_update with the new level quantity. The pool node and the id map
+  /// entry are left alone for the caller.
+  void unlink(std::uint32_t index);
+
+  /// Rests a limit order remainder at the back of its level and emits
+  /// on_book_update, or emits on_cancel when the order or level capacity is
+  /// exhausted.
+  void rest(OrderId id, Side side, Price price, Qty qty);
+
+  Config config_;
+  Listener& listener_;
+  ObjectPool<OrderNode> orders_;
+  IdMap ids_;
+  PriceLadder bids_;
+  PriceLadder asks_;
 };
 
 }  // namespace lob
