@@ -1,0 +1,67 @@
+name: nightly
+
+on:
+  # 06:00 UTC is 02:00 in Toronto during daylight saving time (01:00 EST in
+  # winter), i.e. the middle of the Toronto night.
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      ops:
+        description: "operations per differential run"
+        required: false
+        default: "10000000"
+        type: string
+      seeds:
+        description: "number of seeds to run"
+        required: false
+        default: "5"
+        type: string
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  difftest:
+    name: long difftest
+    # Not part of the required checks: only the schedule and a manual dispatch
+    # start this workflow, never a pull request or a push.
+    runs-on: [self-hosted, macOS, ARM64]
+    # Sized for five runs of 10M operations each, with headroom for the other
+    # jobs sharing this machine.
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v7
+      - name: Bootstrap vcpkg
+        run: |
+          echo "VCPKG_ROOT=$HOME/.cache/matchbook/vcpkg" >> "$GITHUB_ENV"
+          ./scripts/bootstrap_vcpkg.sh
+      - name: Configure (release)
+        run: cmake --preset release
+      - name: Build (release)
+        run: cmake --build --preset release
+      - name: Run long differential tests
+        env:
+          OPS: ${{ inputs.ops || '10000000' }}
+          SEEDS: ${{ inputs.seeds || '5' }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          [[ "$OPS" =~ ^[0-9]+$ ]] || { echo "nightly: ops must be an integer" >&2; exit 2; }
+          [[ "$SEEDS" =~ ^[0-9]+$ ]] || { echo "nightly: seeds must be an integer" >&2; exit 2; }
+          (( SEEDS >= 1 )) || { echo "nightly: seeds must be at least 1" >&2; exit 2; }
+
+          # Seeds are derived from the workflow run id so every nightly uses a
+          # fresh stream, and the exact seeds are printed for reproduction.
+          seeds=()
+          for ((i = 0; i < SEEDS; ++i)); do
+            seeds+=("$(( (RUN_ID + i * 7919) % 1000000007 + 1 ))")
+          done
+          echo "nightly: ops=$OPS seeds=${seeds[*]}"
+
+          for seed in "${seeds[@]}"; do
+            echo "nightly: seed $seed"
+            ./build/release/lobsim difftest --ops "$OPS" --seed "$seed"
+          done
