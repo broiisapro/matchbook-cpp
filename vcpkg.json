@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "matchbook-cpp",
+  "version": "0.1.0",
+  "description": "Single-instrument price-time-priority limit order book and matching engine",
+  "dependencies": [
+    "gtest",
+    "benchmark",
+    "hdr-histogram",
+    "xxhash"
+  ],
+  "builtin-baseline": "9e593bb18ea69cc5095e012465dcd675a822ed0d"
+}
