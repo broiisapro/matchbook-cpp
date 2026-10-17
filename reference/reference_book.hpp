@@ -2,8 +2,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <list>
+#include <map>
 #include <optional>
 #include <span>
+#include <unordered_map>
 
 #include "lob/config.hpp"
 #include "lob/listener.hpp"
@@ -46,9 +50,49 @@ class ReferenceBook {
   std::uint64_t digest() const;
 
  private:
-  // Frozen members; the Epic 1 implementation reads them.
-  [[maybe_unused]] Config config_;
-  [[maybe_unused]] Listener& listener_;
+  struct RestingOrder {
+    OrderId id;
+    Qty qty;
+  };
+
+  using OrderQueue = std::list<RestingOrder>;
+  using BidLevels = std::map<Price, OrderQueue, std::greater<Price>>;
+  using AskLevels = std::map<Price, OrderQueue, std::less<Price>>;
+
+  struct Location {
+    Side side;
+    Price price;
+    OrderQueue::iterator order;
+  };
+
+  /// Removes a resting order from its level and the id index; returns the
+  /// quantity that was still resting.
+  Qty erase_order(const Location& location);
+
+  /// Appends an order at the back of its price level and reports the new level
+  /// quantity.
+  void rest_order(Side side, Price price, OrderId id, Qty qty);
+
+  /// Rests the remainder of a limit order when capacity allows, otherwise
+  /// reports it as cancelled.
+  void rest_remainder(OrderId id, Side side, Price price, Qty qty);
+
+  /// Number of levels currently used on a side.
+  std::size_t level_count(Side side) const;
+
+  void notify_accept(OrderId id);
+  void notify_reject(OrderId id, RejectReason reason);
+  void notify_trade(OrderId maker_id, OrderId taker_id, Price price, Qty qty);
+  void notify_cancel(OrderId id, Qty cancelled_qty);
+  void notify_modify(OrderId id, Price price, Qty new_qty);
+  void notify_book_update(Side side, Price price, Qty new_level_qty);
+
+  Config config_;
+  Listener& listener_;
+  BidLevels bids_;
+  AskLevels asks_;
+  std::unordered_map<OrderId, Location> index_;
+  bool in_callback_ = false;
 };
 
 }  // namespace lob::ref

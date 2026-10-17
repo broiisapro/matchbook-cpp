@@ -93,18 +93,11 @@ TEST(Interfaces, EnginesAreNonCopyableAndNonMovable) {
   static_assert(!std::is_move_assignable_v<lob::ref::ReferenceBook>);
 }
 
-// Exercises the stub API of either engine: calls are accepted and every query
-// reports an empty book.
+// Queries on a freshly constructed book of either engine report an empty book.
 template <typename Book>
-void expect_empty_stub() {
+void expect_empty_book_queries() {
   lob::NullListener listener;
   Book book(kConfig, listener);
-
-  book.submit(1, lob::Side::Buy, lob::OrderType::Limit, 100, 10);
-  book.submit(2, lob::Side::Sell, lob::OrderType::Market, 0, 5);
-  book.submit(3, lob::Side::Sell, lob::OrderType::IOC, 200, 1);
-  book.cancel(4);
-  book.modify(5, 101, 7);
 
   EXPECT_EQ(book.best_bid(), std::nullopt);
   EXPECT_EQ(book.best_ask(), std::nullopt);
@@ -120,9 +113,9 @@ void expect_empty_stub() {
   EXPECT_EQ(book.digest(), lob::DigestBuilder{}.finish());
 }
 
-TEST(OrderBook, EmptyStubAcceptsCalls) { expect_empty_stub<lob::OrderBook>(); }
+TEST(OrderBook, EmptyBookQueries) { expect_empty_book_queries<lob::OrderBook>(); }
 
-TEST(ReferenceBook, EmptyStubAcceptsCalls) { expect_empty_stub<lob::ref::ReferenceBook>(); }
+TEST(ReferenceBook, EmptyBookQueries) { expect_empty_book_queries<lob::ref::ReferenceBook>(); }
 
 TEST(RecordingListener, RecordsEventsInOrder) {
   lob::test::RecordingListener listener;
