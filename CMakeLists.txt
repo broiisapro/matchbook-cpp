@@ -51,12 +51,18 @@ target_include_directories(lob_opgen PUBLIC
                            "${CMAKE_CURRENT_SOURCE_DIR}"
                            "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
-# CLI: gen, replay, difftest, convert-tardis.
+# CLI: gen, replay, difftest, convert-tardis. The subcommand implementations
+# live in lobsim_core so tests can call them directly; the executable is only
+# main.cpp plus the dispatch table.
 file(GLOB LOBSIM_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/tools/lobsim/*.cpp")
-add_executable(lobsim ${LOBSIM_SOURCES})
-target_include_directories(lobsim PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(lobsim PRIVATE lob lob_reference lob_flowfile lob_opgen)
+list(REMOVE_ITEM LOBSIM_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/tools/lobsim/main.cpp")
+add_library(lobsim_core STATIC ${LOBSIM_SOURCES})
+target_include_directories(lobsim_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(lobsim_core PUBLIC lob lob_reference lob_flowfile lob_opgen)
+
+add_executable(lobsim "${CMAKE_CURRENT_SOURCE_DIR}/tools/lobsim/main.cpp")
+target_link_libraries(lobsim PRIVATE lobsim_core)
 
 # Benchmarks.
 file(GLOB LOB_BENCH_SOURCES CONFIGURE_DEPENDS
@@ -66,14 +72,14 @@ target_link_libraries(lob_bench PRIVATE lob benchmark::benchmark
                                        hdr_histogram::hdr_histogram_static)
 
 # Tests. test_alloc replaces global operator new/delete, so it is its own
-# binary and stays out of lob_tests.
+# binary and stays out of lob_tests. lobsim_core publishes the engine and tool
+# libraries, so linking it alone keeps duplicates off the link line.
 file(GLOB LOB_TEST_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_*.cpp")
 list(REMOVE_ITEM LOB_TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_alloc.cpp")
 add_executable(lob_tests ${LOB_TEST_SOURCES})
 target_include_directories(lob_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
-target_link_libraries(lob_tests PRIVATE lob lob_reference lob_flowfile lob_opgen
-                                        GTest::gtest_main)
+target_link_libraries(lob_tests PRIVATE lobsim_core GTest::gtest_main)
 
 add_executable(test_alloc "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_alloc.cpp")
 target_link_libraries(test_alloc PRIVATE lob GTest::gtest_main)
