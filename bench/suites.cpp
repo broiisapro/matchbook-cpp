@@ -296,6 +296,7 @@ void report_latency(benchmark::State& state, const LatencyRecorder& recorder) {
   state.counters["p99_ns"] = static_cast<double>(p.p99_ns);
   state.counters["p999_ns"] = static_cast<double>(p.p999_ns);
   state.counters["max_ns"] = static_cast<double>(p.max_ns);
+  state.counters["mean_ns"] = recorder.mean_ns();
   state.counters["mode"] = recorder.mode() == LatencyMode::Batch16 ? 1.0 : 0.0;
   state.SetItemsProcessed(static_cast<std::int64_t>(recorder.sample_count()) *
                           recorder.ops_per_sample());

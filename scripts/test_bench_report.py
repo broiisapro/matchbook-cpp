@@ -104,3 +104,35 @@ def test_mixed_flow_throughput_row() -> None:
     text = bench_report.render(minimal_report(entries))
     rows = [line for line in text.splitlines() if line.startswith("| Mixed flow |")]
     assert rows and "1,000,000" in rows[-1]
+
+
+def test_sample_percentiles_are_monotonic_and_consistent() -> None:
+    """Every running benchmark in the committed sample must have sane latency
+    accounting.
+
+    Monotonicity and non-negativity hold for every mode. For per-op mode (the
+    only mode a >= 1 GHz counter selects, and the mode of the committed
+    sample) one iteration is one operation, so the samples' mean must sit
+    inside the iteration wall time: a harness that measured the wrong region
+    or lost samples would break one of the two bounds. The stated tolerance is
+    factor 4 with 200 ns of slack on the upper side, which covers the harness's
+    own per-iteration overhead and samples capped at the 10 ms HDR ceiling
+    during a noisy run.
+    """
+    report = bench_report.load_report(SAMPLE)
+    running = 0
+    for entries in bench_report.iteration_entries(report).values():
+        for entry in entries:
+            if entry.get("iterations", 0) <= 0:
+                continue
+            running += 1
+            counters = [entry[key] for key in bench_report.PERCENTILE_KEYS]
+            assert all(value >= 0 for value in counters), entry["name"]
+            assert counters == sorted(counters), entry["name"]  # p50 <= ... <= max
+            if entry.get("mode") == 0.0:
+                mean_ns = entry["mean_ns"]
+                real_time = entry["real_time"]
+                assert 0 < mean_ns <= real_time * 1.1 + 100.0, entry["name"]
+                assert real_time <= mean_ns * 4.0 + 200.0, entry["name"]
+    assert running == len(bench_report.EXPECTED_BENCHMARKS) * 5
+
