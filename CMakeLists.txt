@@ -14,6 +14,7 @@ find_package(GTest CONFIG REQUIRED)
 find_package(benchmark CONFIG REQUIRED)
 find_package(hdr_histogram CONFIG REQUIRED)
 find_package(xxHash CONFIG REQUIRED)
+find_package(ZLIB REQUIRED)
 
 # Fast engine. The implementation lands in Epic 1; the target, includes and
 # dependency wiring are frozen here.
@@ -42,6 +43,7 @@ add_library(lob_flowfile STATIC ${LOB_FLOWFILE_SOURCES})
 target_include_directories(lob_flowfile PUBLIC
                            "${CMAKE_CURRENT_SOURCE_DIR}"
                            "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(lob_flowfile PUBLIC ZLIB::ZLIB)
 
 # Seeded operation generator (WS B).
 file(GLOB LOB_OPGEN_SOURCES CONFIGURE_DEPENDS
