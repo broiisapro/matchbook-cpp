@@ -310,17 +310,17 @@ TEST(OrderBookResting, PricesAtConfiguredBoundariesAreAccepted) {
 TEST(OrderBookResting, DigestMatchesHandBuiltStream) {
   RecordingListener listener;
   OrderBook book(make_config(), listener);
-  book.submit(1, Side::Buy, OrderType::Limit, 102, 7);
-  book.submit(2, Side::Buy, OrderType::Limit, 102, 4);
-  book.submit(3, Side::Buy, OrderType::Limit, 100, 5);
+  book.submit(1, Side::Buy, OrderType::Limit, 100, 7);
+  book.submit(2, Side::Buy, OrderType::Limit, 100, 4);
+  book.submit(3, Side::Buy, OrderType::Limit, 99, 5);
   book.submit(4, Side::Sell, OrderType::Limit, 101, 6);
   book.submit(5, Side::Sell, OrderType::Limit, 101, 2);
 
   DigestBuilder builder;
-  builder.level(Side::Buy, 102, 2);
+  builder.level(Side::Buy, 100, 2);
   builder.order(1, 7);
   builder.order(2, 4);
-  builder.level(Side::Buy, 100, 1);
+  builder.level(Side::Buy, 99, 1);
   builder.order(3, 5);
   builder.level(Side::Sell, 101, 2);
   builder.order(4, 6);
