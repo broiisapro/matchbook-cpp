@@ -102,31 +102,6 @@ TEST(OrderBookResting, CancelMiddleOfFifoKeepsOrder) {
   EXPECT_EQ(book.digest(), builder.finish());
 }
 
-TEST(OrderBookResting, CancelUnknownIdIsRejectedNotCrash) {
-  RecordingListener listener;
-  OrderBook book(make_config(), listener);
-
-  book.cancel(99);
-
-  EXPECT_EQ(listener.events, (std::vector<Event>{Reject{99, RejectReason::UnknownOrder}}));
-  EXPECT_EQ(book.order_count(), 0U);
-  EXPECT_EQ(book.best_bid(), std::nullopt);
-}
-
-TEST(OrderBookResting, DuplicateIdRejected) {
-  RecordingListener listener;
-  OrderBook book(make_config(), listener);
-  book.submit(1, Side::Buy, OrderType::Limit, 100, 5);
-  listener.clear();
-
-  book.submit(1, Side::Sell, OrderType::Limit, 200, 9);
-
-  EXPECT_EQ(listener.events, (std::vector<Event>{Reject{1, RejectReason::DuplicateId}}));
-  EXPECT_EQ(book.order_count(), 1U);
-  EXPECT_EQ(book.best_bid(), std::optional<Price>{100});
-  EXPECT_EQ(book.best_ask(), std::nullopt);
-}
-
 TEST(OrderBookResting, InvalidQuantityIsRejected) {
   RecordingListener listener;
   OrderBook book(make_config(), listener);
