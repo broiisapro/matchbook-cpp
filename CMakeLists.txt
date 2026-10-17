@@ -68,6 +68,7 @@ target_link_libraries(lobsim PRIVATE lobsim_core)
 file(GLOB LOB_BENCH_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/bench/*.cpp")
 add_executable(lob_bench ${LOB_BENCH_SOURCES})
+target_include_directories(lob_bench PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(lob_bench PRIVATE lob benchmark::benchmark
                                        hdr_histogram::hdr_histogram_static)
 
