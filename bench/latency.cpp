@@ -61,4 +61,6 @@ std::uint64_t LatencyRecorder::sample_count() const {
   return static_cast<std::uint64_t>(histogram_->total_count);
 }
 
+double LatencyRecorder::mean_ns() const { return sample_count() == 0 ? 0.0 : hdr_mean(histogram_); }
+
 }  // namespace lob::bench

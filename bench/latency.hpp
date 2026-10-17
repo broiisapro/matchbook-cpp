@@ -89,6 +89,9 @@ class LatencyRecorder {
 
   Percentiles percentiles() const;
 
+  /// Mean of the recorded samples in nanoseconds (0 when empty).
+  double mean_ns() const;
+
   LatencyMode mode() const { return mode_; }
   std::string_view mode_name() const { return to_string(mode_); }
 
