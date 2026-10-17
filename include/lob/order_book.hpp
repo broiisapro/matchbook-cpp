@@ -103,6 +103,14 @@ class OrderBook {
   PriceLadder& ladder(Side side) { return side == Side::Buy ? bids_ : asks_; }
   const PriceLadder& ladder(Side side) const { return side == Side::Buy ? bids_ : asks_; }
 
+  /// Fills the taker against the best opposite levels while they cross.
+  /// Emits on_trade (at the maker's resting price) followed by
+  /// on_book_update for the maker's level; fully filled makers leave the book
+  /// silently and empty levels are dropped, so the best level is recomputed
+  /// after every drain. Returns the unfilled remainder. A market taker
+  /// crosses any level; otherwise the taker's side and limit price decide.
+  Qty match(OrderId taker_id, Side side, Price limit_price, Qty remaining, bool market);
+
   /// Removes a live node from its level: unlinks it from the FIFO, updates the
   /// level aggregates, erases the level when it becomes empty and emits
   /// on_book_update with the new level quantity. The pool node and the id map

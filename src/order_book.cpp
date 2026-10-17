@@ -1,5 +1,6 @@
 #include "lob/order_book.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 
@@ -33,13 +34,23 @@ void OrderBook::submit(OrderId id, Side side, OrderType type, Price price, Qty q
 
   listener_.on_accept(id);
 
-  // The match loop arrives with the matching change; until then every order
-  // behaves as if the opposite side were empty, so a limit remainder rests
-  // and a market or IOC remainder is cancelled.
-  if (type == OrderType::Limit) {
-    rest(id, side, price, qty);
-  } else {
-    listener_.on_cancel(id, qty);
+  Qty remaining = qty;
+  switch (type) {
+    case OrderType::Limit:
+      remaining = match(id, side, price, remaining, /*market=*/false);
+      if (remaining > 0) {
+        rest(id, side, price, remaining);
+      }
+      return;
+    case OrderType::Market:
+      remaining = match(id, side, price, remaining, /*market=*/true);
+      break;
+    case OrderType::IOC:
+      remaining = match(id, side, price, remaining, /*market=*/false);
+      break;
+  }
+  if (remaining > 0) {
+    listener_.on_cancel(id, remaining);
   }
 }
 
@@ -99,6 +110,45 @@ std::uint64_t OrderBook::digest() const {
     });
   }
   return builder.finish();
+}
+
+Qty OrderBook::match(OrderId taker_id, Side side, Price limit_price, Qty remaining, bool market) {
+  PriceLadder& opposite_book = ladder(opposite(side));
+  while (remaining > 0 && !opposite_book.empty()) {
+    const Price maker_price = *opposite_book.best_price();
+    const bool crosses =
+        market || (side == Side::Buy ? maker_price <= limit_price : maker_price >= limit_price);
+    if (!crosses) {
+      break;
+    }
+
+    Level* level = opposite_book.best();
+    const std::uint32_t maker_index = level->head;
+    OrderNode& maker = orders_[maker_index];
+    const Qty fill = std::min(remaining, maker.qty);
+    const OrderId maker_id = maker.id;
+
+    listener_.on_trade(maker_id, taker_id, maker_price, fill);
+    remaining -= fill;
+    maker.qty -= fill;
+    level->total_qty -= fill;
+
+    const bool fully_filled = maker.qty == 0;
+    if (fully_filled) {
+      OrderFifo fifo(orders_, level->head, level->tail);
+      fifo.erase(maker_index);
+      --level->order_count;
+      ids_.erase(maker_id);
+    }
+
+    const Qty new_level_qty = level->total_qty;
+    listener_.on_book_update(opposite(side), maker_price, new_level_qty);
+    opposite_book.erase_if_empty(maker_price);
+    if (fully_filled) {
+      orders_.release(maker_index);
+    }
+  }
+  return remaining;
 }
 
 void OrderBook::unlink(std::uint32_t index) {
