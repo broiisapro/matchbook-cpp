@@ -94,7 +94,7 @@ Unknown id → `on_reject(id, UnknownOrder)`. Otherwise remove it: `on_cancel(id
 Canonical byte stream, all integers little-endian, written field by field (never `memcpy` of structs):
 1. Version byte `0x01`.
 2. Bid levels from best (highest) to worst, then ask levels from best (lowest) to worst. For each level: `side u8` (0 bid, 1 ask), `price i64`, `order_count u32`, then for each order in FIFO order: `id u64`, `remaining_qty i64`.
-Hash: `XXH64(bytes, len, seed = 0)`. Implemented once as `lob::DigestBuilder` (`begin()`, `level(side, price, count)`, `order(id, qty)`, `finish() -> u64`; streaming via `XXH64_state_t`), which only hashes bytes. Each engine walks its own structures. Golden test: the empty book and a fixed 3-level book have committed expected values.
+Hash: `XXH64(bytes, len, seed = 0)`. Implemented once as `lob::DigestBuilder`, whose constructor resets the XXH64 state (seed 0) and writes the version byte; there is no `begin()` call. From there `level(side, price, order_count)`, `order(id, remaining_qty)` and `finish() -> u64` stream the rest of the bytes through `XXH64_state_t`, so the builder only hashes bytes. Each engine walks its own structures. Golden test: the empty book and a fixed 3-level book have committed expected values.
 
 ## 6. Flow file (byte spec)
 
@@ -124,7 +124,7 @@ CSV form, header `op,side,type,id,price,qty,ts_ns` with op/side/type as words (`
 
 ## 8. Reference engine (WS B)
 
-`std::map<Price, std::list<Order>>` per side plus a `std::unordered_map<OrderId, std::list<Order>::iterator>` — whatever is most obviously correct (allocation is fine here). It is never optimized and includes no fast-engine headers other than `types.hpp`, `config.hpp`, `listener.hpp`, `digest.hpp`. It enforces the same Config limits by counting.
+`std::map<Price, std::list<Order>>` per side plus a `std::unordered_map<OrderId, std::list<Order>::iterator>` — whatever is most obviously correct (allocation is fine here). It is never optimized and includes no fast-engine headers other than `types.hpp`, `config.hpp`, `listener.hpp`, `digest.hpp`, and may include `lob/order_book.hpp` solely for the `LevelInfo` struct (decision C23). It enforces the same Config limits by counting.
 
 ## 9. Differential testing (WS B)
 
