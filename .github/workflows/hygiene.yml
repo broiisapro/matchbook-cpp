@@ -1,0 +1,75 @@
+name: hygiene
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches: [main]
+
+concurrency:
+  group: hygiene-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  hygiene:
+    name: hygiene
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Check PR text, commit messages and commit identity
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PATTERN_SUBSTRINGS: ${{ vars.ATTRIBUTION_SUBSTRINGS }}
+          PATTERN_WORDS: ${{ vars.ATTRIBUTION_WORDS }}
+          EXPECTED_GIT_EMAIL: ${{ vars.EXPECTED_GIT_EMAIL }}
+        run: |
+          set -euo pipefail
+
+          fail() {
+            printf 'hygiene: FAIL: %s\n' "$1" >&2
+            exit 1
+          }
+
+          [[ -n "${PATTERN_SUBSTRINGS:-}" ]] || fail "repository variable ATTRIBUTION_SUBSTRINGS is empty"
+          [[ -n "${PATTERN_WORDS:-}" ]] || fail "repository variable ATTRIBUTION_WORDS is empty"
+          [[ -n "${EXPECTED_GIT_EMAIL:-}" ]] || fail "repository variable EXPECTED_GIT_EMAIL is empty"
+
+          # Print the offending lines and fail when any text matches one of the
+          # two pattern sets.
+          scan() {
+            local label="$1" text="$2" pattern="$3" mode="$4"
+            local hit
+            if [[ "$mode" == "word" ]]; then
+              hit="$(printf '%s\n' "$text" | grep -i -w -E "$pattern" || true)"
+            else
+              hit="$(printf '%s\n' "$text" | grep -i -E "$pattern" || true)"
+            fi
+            if [[ -n "$hit" ]]; then
+              printf 'hygiene: FAIL: %s\n' "$label" >&2
+              printf '%s\n' "$hit" >&2
+              exit 1
+            fi
+          }
+
+          scan "PR title matches the disallowed substring patterns" "$PR_TITLE" "$PATTERN_SUBSTRINGS" substring
+          scan "PR body matches the disallowed substring patterns" "$PR_BODY" "$PATTERN_SUBSTRINGS" substring
+          scan "PR title matches the disallowed word patterns" "$PR_TITLE" "$PATTERN_WORDS" word
+          scan "PR body matches the disallowed word patterns" "$PR_BODY" "$PATTERN_WORDS" word
+
+          COMMIT_MESSAGES="$(git log --format='%H%n%B%n---' "$BASE_SHA..$HEAD_SHA")"
+          scan "a commit message matches the disallowed substring patterns" "$COMMIT_MESSAGES" "$PATTERN_SUBSTRINGS" substring
+          scan "a commit message matches the disallowed word patterns" "$COMMIT_MESSAGES" "$PATTERN_WORDS" word
+
+          BAD_IDENTITIES="$(git log --format='%h %ae %ce' "$BASE_SHA..$HEAD_SHA" | awk -v expected="$EXPECTED_GIT_EMAIL" '$2 != expected || $3 != expected { print "  " $1 " author=" $2 " committer=" $3 }')"
+          if [[ -n "$BAD_IDENTITIES" ]]; then
+            printf 'hygiene: FAIL: commit author or committer email differs from EXPECTED_GIT_EMAIL\n' >&2
+            printf '%s\n' "$BAD_IDENTITIES" >&2
+            exit 1
+          fi
+
+          printf 'hygiene: PASS: PR text, commit messages and commit identities are clean\n'
