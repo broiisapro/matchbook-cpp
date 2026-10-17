@@ -77,6 +77,9 @@ class ObjectPool {
   std::uint32_t capacity() const { return capacity_; }
 
  private:
+  // The engine test suite's invariant checker walks the free list directly.
+  friend struct OrderBookTestAccess;
+
   // Each slot is either a live T or the free list's link; the union keeps the
   // storage exact-sized and correctly aligned without constructing T up front.
   union Slot {
