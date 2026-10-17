@@ -33,19 +33,23 @@ target_include_directories(lob_reference PUBLIC
                            "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(lob_reference PUBLIC xxHash::xxhash)
 
-# Flow file records/reader/writer (WS C).
+# Flow file records/reader/writer (WS C). It uses the frozen lob headers but
+# deliberately does not link `lob`: every executable that uses it links the
+# engine directly, which keeps the linker line free of duplicates.
 file(GLOB LOB_FLOWFILE_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/tools/flowfile/*.cpp")
 add_library(lob_flowfile STATIC ${LOB_FLOWFILE_SOURCES})
-target_include_directories(lob_flowfile PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(lob_flowfile PUBLIC lob)
+target_include_directories(lob_flowfile PUBLIC
+                           "${CMAKE_CURRENT_SOURCE_DIR}"
+                           "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 # Seeded operation generator (WS B).
 file(GLOB LOB_OPGEN_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/tools/opgen/*.cpp")
 add_library(lob_opgen STATIC ${LOB_OPGEN_SOURCES})
-target_include_directories(lob_opgen PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(lob_opgen PUBLIC lob)
+target_include_directories(lob_opgen PUBLIC
+                           "${CMAKE_CURRENT_SOURCE_DIR}"
+                           "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 # CLI: gen, replay, difftest, convert-tardis.
 file(GLOB LOBSIM_SOURCES CONFIGURE_DEPENDS
