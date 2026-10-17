@@ -1,0 +1,21 @@
+# Orchestration state and agent worktrees: never committed
+.orchestration/
+.worktrees/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Build outputs and local tool state
+build/
+vcpkg/
+vcpkg_installed/
+CMakeUserPresets.json
+.venv/
+__pycache__/
+
+# OS and editor files
+.DS_Store
+.idea/
+.vscode/
