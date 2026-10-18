@@ -27,7 +27,7 @@ target_link_libraries(lob PUBLIC xxHash::xxhash)
 # array + occupancy bitmap (Epic 2), selected at build time. The definition is
 # PUBLIC because OrderBook's layout and the ladder type depend on it, so every
 # consumer has to compile against the same choice.
-set(LOB_PRICE_LADDER "tree" CACHE STRING "Price ladder implementation: tree or array")
+set(LOB_PRICE_LADDER "array" CACHE STRING "Price ladder implementation: tree or array")
 set_property(CACHE LOB_PRICE_LADDER PROPERTY STRINGS tree array)
 if(LOB_PRICE_LADDER STREQUAL "tree")
   target_compile_definitions(lob PUBLIC LOB_PRICE_LADDER_TREE=1)
