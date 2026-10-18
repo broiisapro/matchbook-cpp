@@ -142,6 +142,13 @@ void add_context(const Prologue& prologue) {
   benchmark::AddCustomContext("cpu", lob::bench::cpu_brand());
   benchmark::AddCustomContext("os", lob::bench::os_version());
   benchmark::AddCustomContext("timer", timer);
+#if defined(LOB_PRICE_LADDER_ARRAY)
+  benchmark::AddCustomContext("price_ladder", "array");
+#elif defined(LOB_PRICE_LADDER_TREE)
+  benchmark::AddCustomContext("price_ladder", "tree");
+#else
+  benchmark::AddCustomContext("price_ladder", "unknown");
+#endif
   benchmark::AddCustomContext("timer_granularity_ns", format_granularity_ns(prologue.granularity));
   benchmark::AddCustomContext("timer_overhead_ns", std::to_string(prologue.overhead.ns));
   benchmark::AddCustomContext("latency_mode", prologue.mode.label());
