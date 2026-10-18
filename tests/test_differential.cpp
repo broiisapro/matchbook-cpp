@@ -9,6 +9,7 @@
 #include "lob/config.hpp"
 #include "lob/order_book.hpp"
 #include "reference/reference_book.hpp"
+#include "tools/flowfile/replay_config.hpp"
 #include "tools/opgen/differential.hpp"
 #include "tools/opgen/opgen.hpp"
 
@@ -67,6 +68,33 @@ TEST(FastVsReference, NarrowPriceRangeMatchesReference) {
   // matching happens in a very crowded ladder.
   constexpr Config config{150, 152, 128, 8};
   expect_match(config, 20261021, kSanitized ? 20000 : 200000);
+}
+
+TEST(FastVsReference, RandomOpsMatchReferenceWideConfig) {
+  // The wide price range and level cap (1..200000, 200000 levels per side)
+  // with the wide generator mix: the 300-tick mid band makes the book
+  // hundreds of price levels deep, and the harness reports the peak depth it
+  // sampled on each side of each engine.
+  //
+  // max_orders is stepped down from the CLI preset's 1048576: the harness
+  // compares full-book digests after every operation, so a million-order book
+  // makes a 300k-op run quadratic (measured ~128 s of CPU with the full
+  // capacity). 2048 keeps the run in the low seconds while still letting the
+  // depth test see ~300 levels per side. The CLI's `--config wide` keeps the
+  // full replay config, and the nightly runs it at a reduced op count.
+  Config config = lob::flowfile::default_replay_config();
+  config.max_orders = 2048;
+  const std::uint64_t ops = kSanitized ? 30000 : 300000;
+  OpGenerator generator(20261025, config, lob::opgen::wide_mix());
+  const DiffResult result = run_differential<OrderBook, ReferenceBook>(config, generator, ops);
+
+  ASSERT_EQ(result.mismatches, 0U)
+      << "first mismatch at op " << result.first_mismatch_index << ": " << result.op;
+  EXPECT_EQ(result.ops_run, ops);
+  EXPECT_GT(result.max_bid_depth_a, 100U) << "fast engine bid depth";
+  EXPECT_GT(result.max_ask_depth_a, 100U) << "fast engine ask depth";
+  EXPECT_GT(result.max_bid_depth_b, 100U) << "reference engine bid depth";
+  EXPECT_GT(result.max_ask_depth_b, 100U) << "reference engine ask depth";
 }
 
 TEST(FastVsReference, LadderStressMatchesReference) {

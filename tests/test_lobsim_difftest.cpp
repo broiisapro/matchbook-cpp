@@ -48,8 +48,41 @@ TEST(LobsimDifftest, ReferenceAgainstReferenceReportsZeroMismatches) {
   EXPECT_TRUE(contains(result.out, "wall_ms: "));
   EXPECT_TRUE(contains(result.out, "engine-a: reference"));
   EXPECT_TRUE(contains(result.out, "engine-b: reference"));
+  EXPECT_TRUE(contains(result.out, "config: narrow"));
   EXPECT_TRUE(contains(result.out, "mix: default"));
+  EXPECT_TRUE(contains(result.out, "max-depth-a: "));
   EXPECT_TRUE(contains(result.err, "progress: 100000 ops"));
+}
+
+TEST(LobsimDifftest, WideConfigIsAcceptedAndReported) {
+  const RunResult result = run_tool({"difftest", "--ops", "2000", "--seed", "5", "--engine-a",
+                                     "reference", "--engine-b", "reference", "--config", "wide"});
+
+  ASSERT_EQ(result.code, 0) << result.err;
+  EXPECT_TRUE(contains(result.out, "config: wide"));
+  EXPECT_TRUE(contains(result.out, "mix: wide"));
+  EXPECT_TRUE(contains(result.out, "min-price: 1"));
+  EXPECT_TRUE(contains(result.out, "max-price: 200000"));
+  EXPECT_TRUE(contains(result.out, "max-orders: 1048576"));
+  EXPECT_TRUE(contains(result.out, "max-levels: 200000"));
+  EXPECT_TRUE(contains(result.out, "mismatches: 0"));
+}
+
+TEST(LobsimDifftest, ExplicitLimitsOverrideTheConfigPresetInAnyOrder) {
+  // The explicit limits must win even when they appear before --config on the
+  // command line.
+  const RunResult result =
+      run_tool({"difftest", "--ops", "1000", "--seed", "6", "--engine-a", "reference", "--engine-b",
+                "reference", "--max-orders", "8", "--min-price", "100", "--config", "wide",
+                "--max-price", "110", "--max-levels", "4"});
+
+  ASSERT_EQ(result.code, 0) << result.err;
+  EXPECT_TRUE(contains(result.out, "config: wide"));
+  EXPECT_TRUE(contains(result.out, "min-price: 100"));
+  EXPECT_TRUE(contains(result.out, "max-price: 110"));
+  EXPECT_TRUE(contains(result.out, "max-orders: 8"));
+  EXPECT_TRUE(contains(result.out, "max-levels: 4"));
+  EXPECT_TRUE(contains(result.out, "mismatches: 0"));
 }
 
 TEST(LobsimDifftest, LadderStressMixIsAcceptedAndReported) {
@@ -93,6 +126,7 @@ TEST(LobsimDifftest, UsageErrorsExitWithTwo) {
       {"difftest", "--ops", "10", "--seed", "1", "--engine-a", "quantum"},
       {"difftest", "--ops", "10", "--seed", "1", "--engine-b", "quantum"},
       {"difftest", "--ops", "10", "--seed", "1", "--mix", "quantum"},
+      {"difftest", "--ops", "10", "--seed", "1", "--config", "quantum"},
       {"difftest", "--ops", "10", "--seed", "1", "--bogus"},
       {"difftest", "--ops", "10", "--seed", "1", "--min-price", "0"},
       {"difftest", "--ops", "10", "--seed", "1", "--max-orders", "0"},
