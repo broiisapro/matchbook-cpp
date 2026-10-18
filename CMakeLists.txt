@@ -23,6 +23,20 @@ add_library(lob STATIC ${LOB_SOURCES})
 target_include_directories(lob PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_link_libraries(lob PUBLIC xxHash::xxhash)
 
+# Price ladder implemented as a std::map tree (Epic 1 baseline) or as an
+# array + occupancy bitmap (Epic 2), selected at build time. The definition is
+# PUBLIC because OrderBook's layout and the ladder type depend on it, so every
+# consumer has to compile against the same choice.
+set(LOB_PRICE_LADDER "tree" CACHE STRING "Price ladder implementation: tree or array")
+set_property(CACHE LOB_PRICE_LADDER PROPERTY STRINGS tree array)
+if(LOB_PRICE_LADDER STREQUAL "tree")
+  target_compile_definitions(lob PUBLIC LOB_PRICE_LADDER_TREE=1)
+elseif(LOB_PRICE_LADDER STREQUAL "array")
+  target_compile_definitions(lob PUBLIC LOB_PRICE_LADDER_ARRAY=1)
+else()
+  message(FATAL_ERROR "LOB_PRICE_LADDER must be 'tree' or 'array', got '${LOB_PRICE_LADDER}'")
+endif()
+
 # Naive reference engine (test-only). It shares no code with `lob` beyond the
 # frozen headers, so it gets the include paths directly and does not link the
 # fast engine.

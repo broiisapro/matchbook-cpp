@@ -47,6 +47,13 @@ class PriceLadder {
         pool_(detail::make_node_pool_for_map<Map>(max_levels)),
         levels_(PriceOrder{side}, Map::allocator_type{pool_.get()}) {}
 
+  /// Constructor that also takes the price range, mirroring ArrayPriceLadder's
+  /// signature so the engine can initialize whichever ladder it was compiled
+  /// against with one expression. The tree ladder does not need the bounds.
+  PriceLadder(Side side, [[maybe_unused]] Price min_price, [[maybe_unused]] Price max_price,
+              std::uint32_t max_levels)
+      : PriceLadder(side, max_levels) {}
+
   PriceLadder(const PriceLadder&) = delete;
   PriceLadder& operator=(const PriceLadder&) = delete;
   PriceLadder(PriceLadder&&) = delete;

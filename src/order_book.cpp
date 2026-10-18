@@ -13,8 +13,8 @@ OrderBook::OrderBook(const Config& config, Listener& listener)
       listener_(listener),
       orders_(config.max_orders),
       ids_(config.max_orders),
-      bids_(Side::Buy, config.max_levels),
-      asks_(Side::Sell, config.max_levels) {
+      bids_(Side::Buy, config.min_price, config.max_price, config.max_levels),
+      asks_(Side::Sell, config.min_price, config.max_price, config.max_levels) {
   assert(valid(config) && "OrderBook requires a valid Config");
 }
 
@@ -77,7 +77,7 @@ void OrderBook::modify(OrderId id, Price new_price, Qty new_qty) {
       return;
     }
     if (new_qty < remaining) {
-      PriceLadder& book = ladder(side);
+      Ladder& book = ladder(side);
       Level* level = book.find(old_price);
       assert(level != nullptr && "every live order sits on an existing level");
       notify_modify(id, old_price, new_qty);
@@ -180,7 +180,7 @@ std::uint64_t OrderBook::digest() const {
 }
 
 Qty OrderBook::match(OrderId taker_id, Side side, Price limit_price, Qty remaining, bool market) {
-  PriceLadder& opposite_book = ladder(opposite(side));
+  Ladder& opposite_book = ladder(opposite(side));
   while (remaining > 0 && !opposite_book.empty()) {
     const Price maker_price = *opposite_book.best_price();
     const bool crosses =
@@ -220,7 +220,7 @@ Qty OrderBook::match(OrderId taker_id, Side side, Price limit_price, Qty remaini
 
 void OrderBook::unlink(std::uint32_t index) {
   OrderNode& node = orders_[index];
-  PriceLadder& book = ladder(node.side);
+  Ladder& book = ladder(node.side);
   Level* level = book.find(node.price);
   assert(level != nullptr && "every live order sits on an existing level");
 
@@ -236,7 +236,7 @@ void OrderBook::unlink(std::uint32_t index) {
 }
 
 void OrderBook::rest(OrderId id, Side side, Price price, Qty qty) {
-  PriceLadder& book = ladder(side);
+  Ladder& book = ladder(side);
   const bool level_exists = book.find(price) != nullptr;
   const bool order_capacity_full = orders_.size() >= config_.max_orders;
   const bool level_capacity_full = !level_exists && book.level_count() >= config_.max_levels;
