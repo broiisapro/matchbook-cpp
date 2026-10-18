@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 #
 # check_determinism.sh - replay the same flow with the debug and release builds
-# and fail unless every engine that is available produces the same digest in
-# both builds.
+# and fail unless the digests agree everywhere they must.
 #
 # What it does:
 #   1. configures and builds the debug and release presets;
@@ -11,10 +10,10 @@
 #   3. replays the flow with --digest for each build and each available engine.
 #      The reference engine is always available; the fast engine is considered
 #      available when a small probe flow yields accepts (a stub engine does not);
-#   4. prints one table row per (engine, build) and checks that the debug and
-#      release digests match per engine. Engine-to-engine agreement is the
-#      differential test's job, not this script's, so a fast/reference mismatch
-#      is reported but does not fail the build-type determinism check.
+#   4. prints one table row per (engine, build) and checks two hard
+#      requirements: the debug and release digests match per engine, and the
+#      fast and reference engines produce the same digest within the same
+#      build. Either mismatch fails the script.
 #
 # Usage: scripts/check_determinism.sh [--orders N] [--seed S]
 # Exit status: 0 when every check passed, 1 otherwise.
@@ -32,7 +31,9 @@ while (($# > 0)); do
     --orders) ORDERS="$2"; shift 2 ;;
     --seed) SEED="$2"; shift 2 ;;
     -h|--help)
-      sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'
+      # Print the leading comment block (from after the shebang to the first
+      # blank line) as the usage text.
+      sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -125,8 +126,16 @@ for engine in "${ENGINES[@]}"; do
   fi
 done
 
-echo
-if [[ "$FAST_AVAILABLE" -eq 0 ]]; then
+if [[ "$FAST_AVAILABLE" -eq 1 ]]; then
+  for preset in debug release; do
+    fast_digest="$(summary_value "$WORK/fast.$preset.out" digest)"
+    reference_digest="$(summary_value "$WORK/reference.$preset.out" digest)"
+    if [[ "$fast_digest" != "$reference_digest" ]]; then
+      echo "FAIL: digest differs between fast ($fast_digest) and reference ($reference_digest) in the $preset build"
+      FAILED=1
+    fi
+  done
+else
   echo "note: fast engine did not accept the probe flow; skipped"
 fi
 
@@ -134,4 +143,4 @@ if [[ "$FAILED" -ne 0 ]]; then
   echo "determinism: FAIL"
   exit 1
 fi
-echo "determinism: PASS (debug and release digests match)"
+echo "determinism: PASS (debug and release digests match, fast and reference agree)"
