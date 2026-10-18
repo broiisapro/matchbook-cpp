@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <iterator>
+#include <string>
 
 #include "bench/latency.hpp"
 #include "bench/timer.hpp"
@@ -63,11 +64,15 @@ std::uint64_t iterations_for_ns(double target_ns) {
   return iterations;
 }
 
-bool check_delay(double target_ns) {
+/// Runs a calibrated ~target_ns delay through the recorder with `request`
+/// forced (auto resolves against the measured granularity) and checks that the
+/// reported p50 lands within +-25 % of the target.
+bool check_delay(double target_ns, LatencyModeRequest request, const char* what) {
   constexpr double kTolerance = 0.25;
   constexpr std::size_t kSamples = 2001;
+  set_latency_mode_request(request);
   const std::uint64_t iterations = iterations_for_ns(target_ns);
-  LatencyRecorder recorder;
+  LatencyRecorder recorder(target_ns);  // the synthetic delay is calibrated by construction
   for (std::size_t sample = 0; sample < kSamples; ++sample) {
     recorder.record_op([iterations] { spin(iterations); });
   }
@@ -75,32 +80,91 @@ bool check_delay(double target_ns) {
   const double low = target_ns * (1.0 - kTolerance);
   const double high = target_ns * (1.0 + kTolerance);
   const bool ok = static_cast<double>(p.p50_ns) >= low && static_cast<double>(p.p50_ns) <= high;
-  std::printf("self-test: target ~%.0f ns -> p50 %" PRIu64 " ns, p99 %" PRIu64 " ns, max %" PRIu64
-              " ns (tolerance %.0f..%.0f ns) [%s]\n",
-              target_ns, p.p50_ns, p.p99_ns, p.max_ns, low, high, ok ? "ok" : "FAILED");
+  std::printf("self-test: %s mode %s: target ~%.0f ns -> p50 %" PRIu64 " ns, p99 %" PRIu64
+              " ns, max %" PRIu64 " ns (tolerance %.0f..%.0f ns) [%s]\n",
+              what, recorder.label().c_str(), target_ns, p.p50_ns, p.p99_ns, p.max_ns, low, high,
+              ok ? "ok" : "FAILED");
   return ok;
 }
 
-const char* mode_name(LatencyMode mode) {
-  return mode == LatencyMode::PerOp ? "per_op" : "batch16";
+/// In auto mode the recorder must pick per-op only when the measured
+/// granularity is at most `kPerOpMaxGranularityNs`, and otherwise the smallest
+/// power-of-two batch of at least `kMinBatchSize` whose calibrated cost
+/// estimate spans `kBatchGranularityTarget` timer steps.
+bool check_auto_mode(const GranularityMeasurement& granularity) {
+  constexpr double kEstimateNs = 200.0;
+  set_latency_mode_request(LatencyModeRequest{});
+  LatencyRecorder recorder(kEstimateNs);
+  const LatencyMode mode = recorder.mode();
+  const LatencyMode expected =
+      select_latency_mode(LatencyModeRequest{}, granularity.step_ns, kEstimateNs);
+  bool ok = mode == expected;
+  const double span_target_ns = kBatchGranularityTarget * granularity.step_ns;
+  if (granularity.step_ns <= kPerOpMaxGranularityNs) {
+    ok = ok && mode.is_per_op();
+  } else {
+    const int batch_size = mode.batch_size;
+    ok = ok && !mode.is_per_op();
+    ok = ok && batch_size >= kMinBatchSize;
+    ok = ok && (batch_size & (batch_size - 1)) == 0;
+    ok = ok && static_cast<double>(batch_size) * kEstimateNs >= span_target_ns;
+    ok = ok && (batch_size == kMinBatchSize ||
+                static_cast<double>(batch_size / 2) * kEstimateNs < span_target_ns);
+  }
+  std::printf("self-test: auto mode %s for granularity %.1f ns with a %.0f ns op estimate [%s]\n",
+              mode.label().c_str(), granularity.step_ns, kEstimateNs, ok ? "ok" : "FAILED");
+  return ok;
+}
+
+/// The `--latency-mode` values the harness accepts and rejects.
+bool check_parsing() {
+  bool ok = true;
+  LatencyModeRequest request;
+  ok = ok && parse_latency_mode_request("auto", request) && request.label() == "auto";
+  ok = ok && parse_latency_mode_request("per_op", request) && request.label() == "per_op";
+  ok = ok && parse_latency_mode_request("batch64", request) && request.label() == "batch64";
+  ok = ok && !parse_latency_mode_request("batch0", request);
+  ok = ok && !parse_latency_mode_request("batch", request);
+  ok = ok && !parse_latency_mode_request("perop", request);
+  ok = ok && !parse_latency_mode_request("batch65536", request);
+  std::printf("self-test: --latency-mode parsing [%s]\n", ok ? "ok" : "FAILED");
+  return ok;
 }
 
 }  // namespace
 
 int run_self_test() {
+  const LatencyModeRequest saved_request = latency_mode_request();
   const TimerInfo info = timer_info();
+  const GranularityMeasurement granularity = timer_granularity();
   const TimerOverhead overhead = calibrate_overhead();
-  const LatencyMode mode = latency_mode_for(info.ticks_per_second);
-  std::printf(
-      "self-test: counter %s at %.0f Hz (measured %.0f Hz against the mach timebase at %.0f Hz: "
-      "%s); mode %s; overhead %" PRIu64 " ticks (%.1f ns)\n",
-      info.counter_name, info.ticks_per_second, info.measured_ticks_per_second,
-      info.mach_ticks_per_second, info.cross_check_agrees ? "agree" : "DISAGREE", mode_name(mode),
-      overhead.ticks, overhead.ns);
+  std::printf("self-test: counter %s at %" PRIu64 " Hz (measured %" PRIu64
+              " Hz against the mach timebase at %" PRIu64 " Hz over %.0f ms: %s)\n",
+              info.counter_name, static_cast<std::uint64_t>(std::llround(info.ticks_per_second)),
+              static_cast<std::uint64_t>(std::llround(info.measured_ticks_per_second)),
+              static_cast<std::uint64_t>(std::llround(info.mach_ticks_per_second)),
+              kCrossCheckWindowSeconds * 1e3, info.cross_check_agrees ? "agree" : "DISAGREE");
+  std::printf("self-test: timer %s\n", describe_granularity(granularity).c_str());
+  std::printf("self-test: timer overhead %" PRIu64 " ticks (%.1f ns)\n", overhead.ticks,
+              overhead.ns);
 
-  const bool small_ok = check_delay(200.0);
-  const bool large_ok = check_delay(2000.0);
-  if (!small_ok || !large_ok) {
+  bool ok = true;
+  ok = check_auto_mode(granularity) && ok;
+  ok = check_parsing() && ok;
+  // Auto mode on the measured granularity, then each forced mode. The
+  // per-op check uses a delay well above the timer step so quantization cannot
+  // move the p50 outside the tolerance band; the batch check uses a delay far
+  // below it to prove that batching resolves sub-step operations.
+  ok = check_delay(200.0, LatencyModeRequest{}, "auto") && ok;
+  ok = check_delay(2000.0, LatencyModeRequest{}, "auto") && ok;
+  ok = check_delay(2000.0, LatencyModeRequest{LatencyModeRequestKind::PerOp, 1}, "forced per-op") &&
+       ok;
+  ok =
+      check_delay(200.0, LatencyModeRequest{LatencyModeRequestKind::Batch, 64}, "forced batch64") &&
+      ok;
+
+  set_latency_mode_request(saved_request);
+  if (!ok) {
     std::fprintf(stderr,
                  "self-test FAILED: reported percentiles do not match the synthetic delays; "
                  "do not trust measurements from this machine right now\n");
