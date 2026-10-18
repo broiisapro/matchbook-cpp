@@ -1,10 +1,8 @@
 #pragma once
 
-#include <concepts>
 #include <cstdint>
 #include <string>
 #include <string_view>
-#include <type_traits>
 
 #include "bench/timer.hpp"
 
@@ -76,6 +74,19 @@ struct LatencyModeRequest {
 void set_latency_mode_request(LatencyModeRequest request);
 LatencyModeRequest latency_mode_request();
 
+/// The mode the whole process runs with, decided once: a forced request is
+/// returned as is; auto mode calibrates a representative operation (a short
+/// dependent-op chain) and selects the batch from that estimate. The decision
+/// is cached, so every benchmark repetition and every JSON context entry
+/// reports the same label. Google Benchmark snapshots its JSON context before
+/// any benchmark runs, which is why the mode is resolved at startup rather
+/// than from the first benchmark's own operation.
+LatencyMode process_latency_mode();
+
+/// Drops the cached auto decision so the next recorder decides again; used by
+/// `lob_bench --self-test`, which exercises several estimates.
+void reset_latency_mode_decision();
+
 /// Parses "auto", "per_op" or "batchN" (N at least 1). Returns false and
 /// leaves `out` untouched on anything else.
 bool parse_latency_mode_request(std::string_view text, LatencyModeRequest& out);
@@ -136,21 +147,13 @@ struct Percentiles {
 /// above the 10 ms ceiling are recorded at the ceiling and counted separately.
 class LatencyRecorder {
  public:
-  /// Uses `kFallbackOpEstimateNs` for auto mode; prefer the calibrating
-  /// constructors below when the real operation is available.
+  /// Uses the process mode (`process_latency_mode()`), resolving auto mode
+  /// from `kFallbackOpEstimateNs` if nothing has decided yet.
   LatencyRecorder();
 
-  /// Auto mode sizes its batch from `typical_op_ns`. The auto decision is made
-  /// once per process, from the first operation calibrated, so every benchmark
-  /// repetition in a run reports the same mode label and the before/after
-  /// comparison does not mix batch sizes.
+  /// Uses `typical_op_ns` for an undecided auto mode; mainly for the
+  /// self-test, which checks the selection rule for several estimates.
   explicit LatencyRecorder(double typical_op_ns);
-
-  /// Calibrates `op`'s cost (a short, real run) and uses that estimate, so the
-  /// batch is sized for the workload actually being measured.
-  template <class F>
-    requires std::invocable<F&> && (!std::same_as<std::remove_cvref_t<F>, LatencyRecorder>)
-  explicit LatencyRecorder(F&& op) : LatencyRecorder(calibrate_op_ns(op)) {}
 
   ~LatencyRecorder();
 

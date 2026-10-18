@@ -339,7 +339,7 @@ void AddOrder_NonCrossing(benchmark::State& state) {
   }
   NullListener listener;
   AddOrderFixture fixture(listener);
-  LatencyRecorder recorder([&fixture] { fixture.add(); });
+  LatencyRecorder recorder;
   for (auto _ : state) {
     if (fixture.needs_drain()) {
       state.PauseTiming();
@@ -358,7 +358,7 @@ void crossing(benchmark::State& state, bool market) {
   }
   NullListener listener;
   CrossingFixture fixture(listener, levels, market);
-  LatencyRecorder recorder([&fixture] { fixture.take(); });
+  LatencyRecorder recorder;
   for (auto _ : state) {
     if (fixture.needs_refill()) {
       state.PauseTiming();
@@ -380,7 +380,7 @@ void Cancel_Resting(benchmark::State& state) {
   }
   NullListener listener;
   CancelFixture fixture(listener);
-  LatencyRecorder recorder([&fixture] { fixture.cancel_one(); });
+  LatencyRecorder recorder;
   for (auto _ : state) {
     if (fixture.needs_refill()) {
       state.PauseTiming();
@@ -398,7 +398,7 @@ void MixedFlow(benchmark::State& state) {
   }
   NullListener listener;
   MixedFlowFixture fixture(listener);
-  LatencyRecorder recorder([&fixture] { fixture.step(); });
+  LatencyRecorder recorder;
   for (auto _ : state) {
     if (fixture.needs_drain()) {
       state.PauseTiming();

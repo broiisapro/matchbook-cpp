@@ -124,13 +124,15 @@ def test_per_op_mode_label_and_explanation() -> None:
     assert bench_report.PER_OP_EXPLANATION in text
 
 
-def test_header_shows_granularity_and_mode_request() -> None:
+def test_header_shows_granularity_and_modes() -> None:
     context = {
         "timer": "cntvct_el0 @ 1000000000 Hz",
         "timer_granularity_ns": "41.0",
-        "latency_mode": "auto",
+        "latency_mode": "batch128",
+        "latency_mode_request": "auto",
     }
     text = bench_report.render(minimal_report([], context=context))
+    assert "| Latency mode | batch128 |" in text
     assert "| Latency mode request | auto |" in text
     assert "| Timer granularity | 41.0 ns |" in text
 

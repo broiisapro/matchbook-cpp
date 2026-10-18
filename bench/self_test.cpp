@@ -135,6 +135,7 @@ bool check_parsing() {
 
 int run_self_test() {
   const LatencyModeRequest saved_request = latency_mode_request();
+  reset_latency_mode_decision();  // check_auto_mode must decide from its own estimate
   const TimerInfo info = timer_info();
   const GranularityMeasurement granularity = timer_granularity();
   const TimerOverhead overhead = calibrate_overhead();
@@ -164,6 +165,7 @@ int run_self_test() {
       ok;
 
   set_latency_mode_request(saved_request);
+  reset_latency_mode_decision();
   if (!ok) {
     std::fprintf(stderr,
                  "self-test FAILED: reported percentiles do not match the synthetic delays; "

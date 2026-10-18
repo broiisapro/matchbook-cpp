@@ -24,6 +24,7 @@ struct Prologue {
   lob::bench::GranularityMeasurement granularity;
   lob::bench::TimerOverhead overhead;
   lob::bench::LatencyModeRequest request;
+  lob::bench::LatencyMode mode;
   int qos_status;
 };
 
@@ -78,7 +79,8 @@ std::uint64_t to_integer_hz(double hz) { return static_cast<std::uint64_t>(std::
 /// distribution, the requested latency mode, the measured timer overhead and
 /// the QoS hint. Goes to stderr so stdout stays machine-readable for
 /// `--benchmark_format=json`.
-Prologue print_prologue(const lob::bench::LatencyModeRequest& request) {
+Prologue print_prologue(const lob::bench::LatencyModeRequest& request,
+                        const lob::bench::LatencyMode& mode) {
   const int qos_status = lob::bench::set_user_interactive_qos();
   const lob::bench::TimerInfo info = lob::bench::timer_info();
   const lob::bench::GranularityMeasurement granularity = lob::bench::timer_granularity();
@@ -99,9 +101,9 @@ Prologue print_prologue(const lob::bench::LatencyModeRequest& request) {
   std::fprintf(stderr, "\nlob_bench: timer %s\n",
                lob::bench::describe_granularity(granularity).c_str());
   std::fprintf(stderr,
-               "lob_bench: latency mode request %s (per-op only when granularity <= %.0f ns; "
+               "lob_bench: latency mode %s (request %s; per-op only when granularity <= %.0f ns; "
                "otherwise the smallest power-of-two batch spanning >= %d steps, min %d, max %d)\n",
-               request.label().c_str(), lob::bench::kPerOpMaxGranularityNs,
+               mode.label().c_str(), request.label().c_str(), lob::bench::kPerOpMaxGranularityNs,
                lob::bench::kBatchGranularityTarget, lob::bench::kMinBatchSize,
                lob::bench::kMaxBatchSize);
   std::fprintf(stderr, "lob_bench: timer overhead %" PRIu64 " ticks (%.1f ns)\n", overhead.ticks,
@@ -112,7 +114,7 @@ Prologue print_prologue(const lob::bench::LatencyModeRequest& request) {
       "(%s)\n",
       qos_status, qos_status == 0 ? "applied" : "failed");
   std::fflush(stderr);
-  return Prologue{info, granularity, overhead, request, qos_status};
+  return Prologue{info, granularity, overhead, request, mode, qos_status};
 }
 
 std::string format_granularity_ns(const lob::bench::GranularityMeasurement& granularity) {
@@ -142,7 +144,8 @@ void add_context(const Prologue& prologue) {
   benchmark::AddCustomContext("timer", timer);
   benchmark::AddCustomContext("timer_granularity_ns", format_granularity_ns(prologue.granularity));
   benchmark::AddCustomContext("timer_overhead_ns", std::to_string(prologue.overhead.ns));
-  benchmark::AddCustomContext("latency_mode", prologue.request.label());
+  benchmark::AddCustomContext("latency_mode", prologue.mode.label());
+  benchmark::AddCustomContext("latency_mode_request", prologue.request.label());
 }
 
 }  // namespace
@@ -155,7 +158,11 @@ int main(int argc, char** argv) {
   }
   lob::bench::set_latency_mode_request(request);
 
-  const Prologue prologue = print_prologue(request);
+  // Resolve the mode before any benchmark runs: Google Benchmark snapshots the
+  // JSON context up front, and the context must name the same mode the
+  // benchmarks report.
+  const lob::bench::LatencyMode mode = lob::bench::process_latency_mode();
+  const Prologue prologue = print_prologue(request, mode);
 
   if (has_flag(benchmark_args, "--self-test")) {
     const int status = lob::bench::run_self_test();

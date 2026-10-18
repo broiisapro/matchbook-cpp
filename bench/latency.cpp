@@ -18,19 +18,41 @@ constexpr std::int64_t kHighestTrackableNs = 10'000'000;
 /// The process-wide request set from `--latency-mode` (or by tests).
 LatencyModeRequest g_request;
 
-/// The auto-mode decision, made once per process from the first calibration so
-/// that every benchmark repetition runs with the same mode and batch size.
+/// The auto-mode decision, made once per process so that every benchmark
+/// repetition and every JSON context entry reports the same mode and batch.
 std::optional<LatencyMode> g_auto_mode;
 
-LatencyMode resolve_latency_mode(LatencyModeRequest request, double granularity_ns,
-                                 double typical_op_ns) {
-  if (request.kind != LatencyModeRequestKind::Auto) {
-    return select_latency_mode(request, granularity_ns, typical_op_ns);
+/// State of the dependent multiply-add chain used to estimate a representative
+/// operation cost at startup.
+std::uint64_t g_representative_state = 1;
+
+/// A ~25 ns dependent chain: the shape (and rough cost) of a book operation,
+/// with a data dependency so the compiler cannot fold it away. Sized to land
+/// well inside the 16..32 ns band that selects the same batch size, so run-to-
+/// run calibration noise cannot flip the power-of-two batch.
+void representative_op() {
+  std::uint64_t state = g_representative_state;
+  for (int i = 0; i < 24; ++i) {
+    state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+    __asm__ __volatile__("" : "+r"(state));
   }
+  g_representative_state = state;
+}
+
+LatencyMode resolve_auto_mode(double typical_op_ns) {
   if (!g_auto_mode.has_value()) {
-    g_auto_mode = select_latency_mode(request, granularity_ns, typical_op_ns);
+    g_auto_mode =
+        select_latency_mode(LatencyModeRequest{}, timer_granularity().step_ns, typical_op_ns);
   }
   return *g_auto_mode;
+}
+
+LatencyMode resolved_mode(double typical_op_ns) {
+  const LatencyModeRequest request = g_request;
+  if (request.kind == LatencyModeRequestKind::Auto) {
+    return resolve_auto_mode(typical_op_ns);
+  }
+  return select_latency_mode(request, timer_granularity().step_ns, typical_op_ns);
 }
 
 /// Records one whole-nanosecond sample, clamped at zero.
@@ -63,6 +85,10 @@ std::string LatencyModeRequest::label() const {
 void set_latency_mode_request(LatencyModeRequest request) { g_request = request; }
 
 LatencyModeRequest latency_mode_request() { return g_request; }
+
+LatencyMode process_latency_mode() { return resolved_mode(calibrate_op_ns(representative_op)); }
+
+void reset_latency_mode_decision() { g_auto_mode.reset(); }
 
 bool parse_latency_mode_request(std::string_view text, LatencyModeRequest& out) {
   if (text == "auto") {
@@ -120,9 +146,7 @@ LatencyMode select_latency_mode(LatencyModeRequest request, double granularity_n
 LatencyRecorder::LatencyRecorder() : LatencyRecorder(kFallbackOpEstimateNs) {}
 
 LatencyRecorder::LatencyRecorder(double typical_op_ns)
-    : mode_(
-          resolve_latency_mode(latency_mode_request(), timer_granularity().step_ns, typical_op_ns)),
-      overhead_(calibrate_overhead()) {
+    : mode_(resolved_mode(typical_op_ns)), overhead_(calibrate_overhead()) {
   const int status = hdr_init(1, kHighestTrackableNs, 3, &histogram_);
   if (status != 0) {
     std::fprintf(stderr, "latency: hdr_init failed (%d)\n", status);
