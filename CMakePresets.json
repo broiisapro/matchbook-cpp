@@ -38,6 +38,22 @@
       }
     },
     {
+      "name": "release-tree",
+      "displayName": "Release (tree price ladder baseline)",
+      "inherits": "release",
+      "cacheVariables": {
+        "LOB_PRICE_LADDER": "tree"
+      }
+    },
+    {
+      "name": "release-array",
+      "displayName": "Release (array price ladder)",
+      "inherits": "release",
+      "cacheVariables": {
+        "LOB_PRICE_LADDER": "array"
+      }
+    },
+    {
       "name": "asan",
       "displayName": "ASan + UBSan",
       "inherits": "base",
@@ -70,6 +86,14 @@
       "configurePreset": "debug"
     },
     {
+      "name": "release-tree",
+      "configurePreset": "release-tree"
+    },
+    {
+      "name": "release-array",
+      "configurePreset": "release-array"
+    },
+    {
       "name": "asan",
       "configurePreset": "asan"
     },
@@ -89,6 +113,20 @@
     {
       "name": "debug",
       "configurePreset": "debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release-tree",
+      "configurePreset": "release-tree",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release-array",
+      "configurePreset": "release-array",
       "output": {
         "outputOnFailure": true
       }

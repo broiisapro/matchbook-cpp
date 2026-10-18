@@ -6,6 +6,7 @@
 #include <optional>
 #include <span>
 
+#include "lob/array_ladder.hpp"
 #include "lob/config.hpp"
 #include "lob/id_map.hpp"
 #include "lob/intrusive_list.hpp"
@@ -101,8 +102,18 @@ class OrderBook {
 
   using OrderFifo = IntrusiveList<OrderNode, &OrderNode::prev, &OrderNode::next>;
 
-  PriceLadder& ladder(Side side) { return side == Side::Buy ? bids_ : asks_; }
-  const PriceLadder& ladder(Side side) const { return side == Side::Buy ? bids_ : asks_; }
+  /// The price-level container this engine was compiled against. The build
+  /// option LOB_PRICE_LADDER selects the std::map tree (Epic 1 baseline) or
+  /// the bitmap-indexed array ladder (Epic 2); both implement the same
+  /// interface and produce identical events.
+#if defined(LOB_PRICE_LADDER_ARRAY)
+  using Ladder = ArrayPriceLadder;
+#else
+  using Ladder = PriceLadder;
+#endif
+
+  Ladder& ladder(Side side) { return side == Side::Buy ? bids_ : asks_; }
+  const Ladder& ladder(Side side) const { return side == Side::Buy ? bids_ : asks_; }
 
   /// Places an order whose validation has already passed: emits on_accept,
   /// matches, then rests a limit remainder under the capacity rules or
@@ -167,8 +178,8 @@ class OrderBook {
   Listener& listener_;
   ObjectPool<OrderNode> orders_;
   IdMap ids_;
-  PriceLadder bids_;
-  PriceLadder asks_;
+  Ladder bids_;
+  Ladder asks_;
   bool in_callback_ = false;
 };
 
