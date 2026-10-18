@@ -133,9 +133,9 @@ class CrossingFixture {
     --remaining_;
   }
 
-  /// True when the head of a swept pool may run out inside the next record_op
-  /// call (which performs up to kBatchSize takes in batch16 mode).
-  bool needs_refill() const { return remaining_ < kBatchSize; }
+  /// True when a swept pool may run out inside the next record_op call, which
+  /// performs up to kMaxBatchSize operations in batch mode.
+  bool needs_refill() const { return remaining_ < static_cast<std::size_t>(kMaxBatchSize); }
 
   void refill() {
     for (int level = 0; level < swept_levels(); ++level) {
@@ -187,15 +187,17 @@ class AddOrderFixture {
   }
 
  private:
-  static constexpr std::size_t kHeadroom = 1024;
+  /// More than one whole batch of headroom, so a record_op call can never
+  /// cross the capacity limit between two drain checks.
+  static constexpr std::size_t kHeadroom = 4096;
   OrderBook book_;
   OrderId next_id_ = 1;
   std::vector<OrderId> live_;
 };
 
 /// A pool of resting orders cancelled one at a time. The pool is rebuilt
-/// outside the timed region; the headroom covers a whole batch16 batch in one
-/// record_op call.
+/// outside the timed region; the headroom covers a whole batch (up to
+/// kMaxBatchSize operations) in one record_op call.
 class CancelFixture {
  public:
   explicit CancelFixture(Listener& listener) : book_(bench_config(), listener) { refill(); }
@@ -210,7 +212,9 @@ class CancelFixture {
     }
   }
 
-  bool needs_refill() const { return index_ + kBatchSize > ids_.size(); }
+  bool needs_refill() const {
+    return index_ + static_cast<std::size_t>(kMaxBatchSize) > ids_.size();
+  }
 
   void cancel_one() { book_.cancel(ids_[index_++]); }
 
@@ -262,7 +266,9 @@ class MixedFlowFixture {
   std::size_t order_count() const { return book_.order_count(); }
 
  private:
-  static constexpr std::size_t kHeadroom = 1024;
+  /// More than one whole batch of headroom, so a record_op call can never
+  /// cross the capacity limit between two drain checks.
+  static constexpr std::size_t kHeadroom = 4096;
   OrderBook book_;
   OrderId next_id_ = 1;
   std::mt19937_64 rng_;
@@ -288,7 +294,9 @@ std::string sanity_mixed_flow() {
                   "the mixed flow must rest, trade and cancel orders");
 }
 
-/// Adds the latency percentiles and the mode flag to the benchmark result.
+/// Adds the latency percentiles and the mode label to the benchmark result.
+/// The label appears in Google Benchmark's console output; the counters carry
+/// the same information into bench.json for the report.
 void report_latency(benchmark::State& state, const LatencyRecorder& recorder) {
   const Percentiles p = recorder.percentiles();
   state.counters["p50_ns"] = static_cast<double>(p.p50_ns);
@@ -297,7 +305,9 @@ void report_latency(benchmark::State& state, const LatencyRecorder& recorder) {
   state.counters["p999_ns"] = static_cast<double>(p.p999_ns);
   state.counters["max_ns"] = static_cast<double>(p.max_ns);
   state.counters["mean_ns"] = recorder.mean_ns();
-  state.counters["mode"] = recorder.mode() == LatencyMode::Batch16 ? 1.0 : 0.0;
+  state.counters["mode"] = recorder.mode().is_per_op() ? 0.0 : 1.0;
+  state.counters["batch_size"] = static_cast<double>(recorder.ops_per_sample());
+  state.SetLabel(recorder.label());
   state.SetItemsProcessed(static_cast<std::int64_t>(recorder.sample_count()) *
                           recorder.ops_per_sample());
 }

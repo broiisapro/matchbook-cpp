@@ -28,6 +28,7 @@ def make_entry(
     iterations: int = 100,
     items: float | None = None,
     mode: float = 0.0,
+    batch_size: float = 1.0,
 ) -> dict:
     return {
         "name": name,
@@ -37,6 +38,7 @@ def make_entry(
         "iterations": iterations,
         "items_per_second": items,
         "mode": mode,
+        "batch_size": batch_size,
         "p50_ns": p50,
         "p90_ns": p90,
         "p99_ns": p99,
@@ -54,7 +56,7 @@ def test_renders_committed_sample() -> None:
     text = bench_report.render(report)
     assert "# Benchmark report" in text
     for field in ("| CPU |", "| OS |", "| Compiler |", "| Build flags |", "| Timer |",
-                  "| Latency mode |", "| Repetitions |"):
+                  "| Latency mode request |", "| Repetitions |"):
         assert field in text
     assert bench_report.CAVEAT in text
     for name in bench_report.EXPECTED_BENCHMARKS:
@@ -82,6 +84,13 @@ def test_missing_counters_fail_with_clear_message() -> None:
         bench_report.render(minimal_report([entry]))
 
 
+def test_missing_batch_size_fails_with_clear_message() -> None:
+    entry = make_entry("Cancel_Resting", 0, 100, 110, 120, 130, 150)
+    del entry["batch_size"]
+    with pytest.raises(bench_report.ReportError, match=r"Cancel_Resting.*batch_size"):
+        bench_report.render(minimal_report([entry]))
+
+
 def test_skipped_benchmark_is_rendered_as_skipped() -> None:
     entry = {
         "name": "MixedFlow",
@@ -93,6 +102,39 @@ def test_skipped_benchmark_is_rendered_as_skipped() -> None:
     text = bench_report.render(minimal_report([entry]))
     rows = [line for line in text.splitlines() if line.startswith("| Mixed flow")]
     assert rows and "skipped" in rows[0]
+
+
+def test_batch_mode_labels_and_explanation() -> None:
+    entries = [
+        make_entry("AddOrder_NonCrossing", 0, 30, 40, 50, 60, 70, mode=1.0, batch_size=64.0),
+        make_entry("Cancel_Resting", 1, 25, 35, 45, 55, 65, mode=1.0, batch_size=128.0),
+    ]
+    text = bench_report.render(minimal_report(entries))
+    assert "| batch64 |" in text
+    assert "| batch128 |" in text
+    assert "per-op averages over batches of N" in text
+    assert "smoothed by N" in text
+    assert "Batch sizes in this run: 64, 128." in text
+
+
+def test_per_op_mode_label_and_explanation() -> None:
+    entry = make_entry("AddOrder_NonCrossing", 0, 30, 40, 50, 60, 70)
+    text = bench_report.render(minimal_report([entry]))
+    assert "| per_op |" in text
+    assert bench_report.PER_OP_EXPLANATION in text
+
+
+def test_header_shows_granularity_and_modes() -> None:
+    context = {
+        "timer": "cntvct_el0 @ 1000000000 Hz",
+        "timer_granularity_ns": "41.0",
+        "latency_mode": "batch128",
+        "latency_mode_request": "auto",
+    }
+    text = bench_report.render(minimal_report([], context=context))
+    assert "| Latency mode | batch128 |" in text
+    assert "| Latency mode request | auto |" in text
+    assert "| Timer granularity | 41.0 ns |" in text
 
 
 def test_mixed_flow_throughput_row() -> None:
@@ -110,14 +152,15 @@ def test_sample_percentiles_are_monotonic_and_consistent() -> None:
     """Every running benchmark in the committed sample must have sane latency
     accounting.
 
-    Monotonicity and non-negativity hold for every mode. For per-op mode (the
-    only mode a >= 1 GHz counter selects, and the mode of the committed
-    sample) one iteration is one operation, so the samples' mean must sit
-    inside the iteration wall time: a harness that measured the wrong region
-    or lost samples would break one of the two bounds. The stated tolerance is
-    factor 4 with 200 ns of slack on the upper side, which covers the harness's
-    own per-iteration overhead and samples capped at the 10 ms HDR ceiling
-    during a noisy run.
+    Monotonicity and non-negativity hold for every mode. One Google Benchmark
+    iteration performs one record_op call, so the per-iteration CPU time must
+    cover the median sample times the number of operations in a call
+    (`batch_size`), within factor-4 slack plus 200 ns. The median is used
+    because the sample mean is inflated by preemption on a busy machine (a
+    scheduled-out thread keeps the counter running between two operations of a
+    batch) while the median batch usually stays clean; the upper bound catches
+    a harness that measured the wrong region and the lower bound one that lost
+    samples.
     """
     report = bench_report.load_report(SAMPLE)
     running = 0
@@ -129,10 +172,10 @@ def test_sample_percentiles_are_monotonic_and_consistent() -> None:
             counters = [entry[key] for key in bench_report.PERCENTILE_KEYS]
             assert all(value >= 0 for value in counters), entry["name"]
             assert counters == sorted(counters), entry["name"]  # p50 <= ... <= max
-            if entry.get("mode") == 0.0:
-                mean_ns = entry["mean_ns"]
-                real_time = entry["real_time"]
-                assert 0 < mean_ns <= real_time * 1.1 + 100.0, entry["name"]
-                assert real_time <= mean_ns * 4.0 + 200.0, entry["name"]
+            ops_per_iteration = max(1, int(entry.get("batch_size", 1)))
+            p50_ns = entry["p50_ns"]
+            cpu_time = entry["cpu_time"]
+            assert entry["mean_ns"] >= p50_ns, entry["name"]
+            assert 0 < p50_ns * ops_per_iteration <= cpu_time * 4.0 + 200.0, entry["name"]
+            assert cpu_time <= p50_ns * ops_per_iteration * 4.0 + 200.0, entry["name"]
     assert running == len(bench_report.EXPECTED_BENCHMARKS) * 5
-
