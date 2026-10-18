@@ -1,9 +1,11 @@
+#include <algorithm>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -15,6 +17,7 @@
 #include "lob/types.hpp"
 #include "reference/reference_book.hpp"
 #include "tests/support/recording_listener.hpp"
+#include "tools/flowfile/replay_config.hpp"
 #include "tools/lobsim/commands.hpp"
 #include "tools/opgen/differential.hpp"
 #include "tools/opgen/opgen.hpp"
@@ -37,9 +40,14 @@ using lob::opgen::OpGenerator;
 using lob::opgen::OpKind;
 using lob::opgen::OpMix;
 using lob::opgen::run_differential;
+using lob::opgen::wide_mix;
 using lob::ref::ReferenceBook;
 
 enum class EngineKind { Fast, Reference };
+
+/// Named configuration presets: the small narrow default and the flow tools'
+/// wide replay config.
+enum class ConfigKind { Narrow, Wide };
 
 /// Default differential config. It is deliberately much smaller than the
 /// flow-tool default replay config: a max_orders of 512 and a max_levels of 16
@@ -57,7 +65,7 @@ constexpr std::string_view kUsage =
     "\n"
     "Runs one generated operation stream through two engines. After every\n"
     "operation the listener event streams must be identical and the two book\n"
-    "digests must match. Defaults are fast vs reference with a small config\n"
+    "digests must match. Defaults are fast vs reference with the narrow config\n"
     "(min-price 1, max-price 500, max-orders 512, max-levels 16) chosen so\n"
     "capacity cancels and price-range edges are actually hit.\n"
     "\n"
@@ -68,7 +76,13 @@ constexpr std::string_view kUsage =
     "options:\n"
     "  --engine-a E         fast | reference (default fast)\n"
     "  --engine-b E         fast | reference (default reference)\n"
-    "  --mix M              default | ladder_stress (default default);\n"
+    "  --config C           narrow | wide (default narrow); wide uses the flow\n"
+    "                       tools' replay config (prices 1..200000, 1048576\n"
+    "                       orders, 200000 levels) and, unless --mix is given,\n"
+    "                       the wide generator mix that reaches hundreds of\n"
+    "                       levels deep\n"
+    "  --mix M              default | ladder_stress | wide (default: default\n"
+    "                       for --config narrow, wide for --config wide);\n"
     "                       ladder_stress clusters prices at the ladder bitmap\n"
     "                       boundaries, sweeps a side empty and drains/refills\n"
     "                       the best level\n"
@@ -86,8 +100,10 @@ struct DiffOptions {
   std::uint64_t seed = 0;
   EngineKind engine_a = EngineKind::Fast;
   EngineKind engine_b = EngineKind::Reference;
+  ConfigKind config_kind = ConfigKind::Narrow;
   Config config = default_diff_config();
   OpMix mix{};
+  bool have_mix = false;
   bool progress = false;
   bool help = false;
 };
@@ -122,12 +138,32 @@ bool parse_mix(std::string_view text, OpMix& out) {
     out = ladder_stress_mix();
     return true;
   }
+  if (text == "wide") {
+    out = wide_mix();
+    return true;
+  }
+  return false;
+}
+
+bool parse_config(std::string_view text, ConfigKind& out) {
+  if (text == "narrow") {
+    out = ConfigKind::Narrow;
+    return true;
+  }
+  if (text == "wide") {
+    out = ConfigKind::Wide;
+    return true;
+  }
   return false;
 }
 
 bool parse_args(int argc, char** argv, DiffOptions& options) {
   bool have_ops = false;
   bool have_seed = false;
+  std::optional<Price> min_price;
+  std::optional<Price> max_price;
+  std::optional<std::uint32_t> max_orders;
+  std::optional<std::uint32_t> max_levels;
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view flag = argv[i];
@@ -175,32 +211,39 @@ bool parse_args(int argc, char** argv, DiffOptions& options) {
                      std::string(value).c_str());
         return false;
       }
-    } else if (flag == "--mix") {
-      if (!parse_mix(value, options.mix)) {
-        std::fprintf(stderr, "difftest: --mix must be default or ladder_stress, got '%s'\n",
+    } else if (flag == "--config") {
+      if (!parse_config(value, options.config_kind)) {
+        std::fprintf(stderr, "difftest: --config must be narrow or wide, got '%s'\n",
                      std::string(value).c_str());
         return false;
       }
+    } else if (flag == "--mix") {
+      if (!parse_mix(value, options.mix)) {
+        std::fprintf(stderr, "difftest: --mix must be default, ladder_stress or wide, got '%s'\n",
+                     std::string(value).c_str());
+        return false;
+      }
+      options.have_mix = true;
     } else if (flag == "--min-price") {
-      if (!parse_integer(value, options.config.min_price)) {
+      if (!parse_integer(value, min_price.emplace())) {
         std::fprintf(stderr, "difftest: --min-price needs an integer, got '%s'\n",
                      std::string(value).c_str());
         return false;
       }
     } else if (flag == "--max-price") {
-      if (!parse_integer(value, options.config.max_price)) {
+      if (!parse_integer(value, max_price.emplace())) {
         std::fprintf(stderr, "difftest: --max-price needs an integer, got '%s'\n",
                      std::string(value).c_str());
         return false;
       }
     } else if (flag == "--max-orders") {
-      if (!parse_integer(value, options.config.max_orders)) {
+      if (!parse_integer(value, max_orders.emplace())) {
         std::fprintf(stderr, "difftest: --max-orders needs a positive integer, got '%s'\n",
                      std::string(value).c_str());
         return false;
       }
     } else if (flag == "--max-levels") {
-      if (!parse_integer(value, options.config.max_levels)) {
+      if (!parse_integer(value, max_levels.emplace())) {
         std::fprintf(stderr, "difftest: --max-levels needs a positive integer, got '%s'\n",
                      std::string(value).c_str());
         return false;
@@ -219,6 +262,27 @@ bool parse_args(int argc, char** argv, DiffOptions& options) {
     std::fputs("difftest: --seed is required\n", stderr);
     return false;
   }
+
+  // The config preset comes first so explicit limit flags override it no
+  // matter where --config appears on the command line.
+  options.config = options.config_kind == ConfigKind::Wide ? lob::flowfile::default_replay_config()
+                                                           : default_diff_config();
+  if (min_price) {
+    options.config.min_price = *min_price;
+  }
+  if (max_price) {
+    options.config.max_price = *max_price;
+  }
+  if (max_orders) {
+    options.config.max_orders = *max_orders;
+  }
+  if (max_levels) {
+    options.config.max_levels = *max_levels;
+  }
+  if (!options.have_mix) {
+    options.mix = options.config_kind == ConfigKind::Wide ? wide_mix() : OpMix{};
+  }
+
   if (!lob::valid(options.config)) {
     std::fputs(
         "difftest: the configuration is not usable "
@@ -231,6 +295,10 @@ bool parse_args(int argc, char** argv, DiffOptions& options) {
 
 const char* engine_name(EngineKind engine) {
   return engine == EngineKind::Fast ? "fast" : "reference";
+}
+
+const char* config_name(ConfigKind config) {
+  return config == ConfigKind::Wide ? "wide" : "narrow";
 }
 
 const char* kind_name(OpKind kind) {
@@ -379,11 +447,16 @@ int run_selected(const DiffOptions& options) {
 
   std::printf("engine-a: %s\n", engine_name(options.engine_a));
   std::printf("engine-b: %s\n", engine_name(options.engine_b));
+  std::printf("config: %s\n", config_name(options.config_kind));
   std::printf("mix: %s\n", std::string(lob::opgen::to_string(options.mix.preset)).c_str());
   std::printf("min-price: %lld\n", static_cast<long long>(options.config.min_price));
   std::printf("max-price: %lld\n", static_cast<long long>(options.config.max_price));
   std::printf("max-orders: %u\n", options.config.max_orders);
   std::printf("max-levels: %u\n", options.config.max_levels);
+  std::printf("max-depth-a: %llu\n", static_cast<unsigned long long>(
+                                         std::max(result.max_bid_depth_a, result.max_ask_depth_a)));
+  std::printf("max-depth-b: %llu\n", static_cast<unsigned long long>(
+                                         std::max(result.max_bid_depth_b, result.max_ask_depth_b)));
   std::printf("ops: %llu\n", static_cast<unsigned long long>(result.ops_run));
   std::printf("seed: %llu\n", static_cast<unsigned long long>(options.seed));
   std::printf("mismatches: %llu\n", static_cast<unsigned long long>(result.mismatches));

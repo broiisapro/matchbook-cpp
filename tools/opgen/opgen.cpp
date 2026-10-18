@@ -41,8 +41,17 @@ std::string_view to_string(OpMixPreset preset) {
       return "default";
     case OpMixPreset::LadderStress:
       return "ladder_stress";
+    case OpMixPreset::Wide:
+      return "wide";
   }
   return "default";
+}
+
+OpMix wide_mix() {
+  OpMix mix;
+  mix.preset = OpMixPreset::Wide;
+  mix.mid_half_width = 300;
+  return mix;
 }
 
 OpMix ladder_stress_mix() {
@@ -310,14 +319,16 @@ Price OpGenerator::choose_submit_price(Side side) {
   if (chance(mix_.edge_price_weight)) {
     return choose_edge_price();
   }
-  const Price lo = std::max(mid_ - 10, config_.min_price - 2);
-  const Price hi = std::min(mid_ + 10, config_.max_price + 2);
+  const auto band = static_cast<Price>(mix_.mid_half_width);
+  const Price lo = std::max(mid_ - band, config_.min_price - 2);
+  const Price hi = std::min(mid_ + band, config_.max_price + 2);
   return uniform_price(lo, hi);
 }
 
 Price OpGenerator::choose_move_price(Price old_price) {
-  const Price lo = std::max(mid_ - 10, config_.min_price);
-  const Price hi = std::min(mid_ + 10, config_.max_price);
+  const auto band = static_cast<Price>(mix_.mid_half_width);
+  const Price lo = std::max(mid_ - band, config_.min_price);
+  const Price hi = std::min(mid_ + band, config_.max_price);
   Price price = lo <= hi ? uniform_price(lo, hi) : mid_;
   if (price == old_price) {
     if (price < config_.max_price) {

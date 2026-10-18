@@ -8,9 +8,14 @@ on:
   workflow_dispatch:
     inputs:
       ops:
-        description: "operations per differential run"
+        description: "operations per narrow-config run"
         required: false
-        default: "10000000"
+        default: "2000000"
+        type: string
+      wide_ops:
+        description: "operations per wide-config run"
+        required: false
+        default: "200000"
         type: string
       seeds:
         description: "number of seeds to run"
@@ -28,11 +33,17 @@ jobs:
     # Not part of the required checks: only the schedule and a manual dispatch
     # start this workflow, never a pull request or a push.
     runs-on: [self-hosted, macOS, ARM64]
-    # Sized for five runs of 10M operations each, with headroom for the other
-    # jobs sharing this machine.
-    timeout-minutes: 360
+    # Both presets, both configs and five seeds are expected to finish well
+    # inside forty minutes; the timeout is headroom for a busy machine. The
+    # wide config gets its own, lower op count because the harness compares
+    # full-book digests after every operation and the wide books are deep.
+    timeout-minutes: 90
     steps:
+      # clean: false keeps the runner's persistent workspace, so both preset
+      # builds are incremental whenever a previous run left them in place.
       - uses: actions/checkout@v7
+        with:
+          clean: false
       - name: Bootstrap vcpkg
         run: |
           echo "VCPKG_ROOT=$HOME/.cache/matchbook/vcpkg" >> "$GITHUB_ENV"
@@ -41,15 +52,21 @@ jobs:
         run: cmake --preset release
       - name: Build (release)
         run: cmake --build --preset release
+      - name: Configure (release-tree)
+        run: cmake --preset release-tree
+      - name: Build (release-tree)
+        run: cmake --build --preset release-tree
       - name: Run long differential tests
         env:
-          OPS: ${{ inputs.ops || '10000000' }}
+          OPS: ${{ inputs.ops || '2000000' }}
+          WIDE_OPS: ${{ inputs.wide_ops || '200000' }}
           SEEDS: ${{ inputs.seeds || '5' }}
           RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
 
           [[ "$OPS" =~ ^[0-9]+$ ]] || { echo "nightly: ops must be an integer" >&2; exit 2; }
+          [[ "$WIDE_OPS" =~ ^[0-9]+$ ]] || { echo "nightly: wide_ops must be an integer" >&2; exit 2; }
           [[ "$SEEDS" =~ ^[0-9]+$ ]] || { echo "nightly: seeds must be an integer" >&2; exit 2; }
           (( SEEDS >= 1 )) || { echo "nightly: seeds must be at least 1" >&2; exit 2; }
 
@@ -59,9 +76,15 @@ jobs:
           for ((i = 0; i < SEEDS; ++i)); do
             seeds+=("$(( (RUN_ID + i * 7919) % 1000000007 + 1 ))")
           done
-          echo "nightly: ops=$OPS seeds=${seeds[*]}"
+          echo "nightly: ops=$OPS wide_ops=$WIDE_OPS seeds=${seeds[*]}"
 
+          # Each seed runs both configs against both ladders; the summary
+          # prints the config name and the max sampled depth.
           for seed in "${seeds[@]}"; do
-            echo "nightly: seed $seed"
-            ./build/release/lobsim difftest --ops "$OPS" --seed "$seed"
+            for preset in release release-tree; do
+              echo "nightly: preset=$preset config=narrow seed=$seed"
+              ./build/$preset/lobsim difftest --ops "$OPS" --seed "$seed" --config narrow
+              echo "nightly: preset=$preset config=wide seed=$seed"
+              ./build/$preset/lobsim difftest --ops "$WIDE_OPS" --seed "$seed" --config wide
+            done
           done
