@@ -2,12 +2,15 @@
 
 Usage: uv run scripts/bench_report.py build/release/bench.json > bench.md
 
-For every expected benchmark the table shows the latency percentiles of the
-median run across repetitions (selected by p50_ns), plus the spread of p50
-across runs. Mixed flow adds a throughput row. Benchmarks that were skipped
-because the engine could not run them are shown as skipped; a benchmark that
-ran but is missing one of the p50_ns/p90_ns/p99_ns/p999_ns/max_ns/mode
-counters fails with a clear error instead of being silently dropped.
+For every expected benchmark the table shows the sampling mode and the latency
+percentiles of the median run across repetitions (selected by p50_ns), plus the
+spread of p50 across runs. In `batchN` mode each sample is the per-op average
+over a batch of N operations, so the percentiles describe per-op latency with
+the tail smoothed by N (decision C32). Mixed flow adds a throughput row.
+Benchmarks that were skipped because the engine could not run them are shown as
+skipped; a benchmark that ran but is missing one of the
+p50_ns/p90_ns/p99_ns/p999_ns/max_ns/mode/batch_size counters fails with a clear
+error instead of being silently dropped.
 """
 
 from __future__ import annotations
@@ -18,7 +21,7 @@ import sys
 from pathlib import Path
 
 PERCENTILE_KEYS = ("p50_ns", "p90_ns", "p99_ns", "p999_ns", "max_ns")
-REQUIRED_COUNTERS = PERCENTILE_KEYS + ("mode",)
+REQUIRED_COUNTERS = PERCENTILE_KEYS + ("mode", "batch_size")
 
 EXPECTED_BENCHMARKS = (
     "AddOrder_NonCrossing",
@@ -41,6 +44,14 @@ CAVEAT = (
     "are only meaningful when taken by `scripts/run_benchmarks.sh` on an "
     "otherwise idle machine."
 )
+
+BATCH_EXPLANATION = (
+    "`batchN` mode: every percentile is of per-op averages over batches of N "
+    "operations, so the tails are smoothed by N; `per_op` times each operation "
+    "individually."
+)
+
+PER_OP_EXPLANATION = "`per_op` mode: every sample times one operation individually."
 
 
 class ReportError(Exception):
@@ -132,6 +143,31 @@ def format_spread(entries: list[dict]) -> str:
     return f"{format_ns(low)}–{format_ns(high)}"
 
 
+def mode_label(entry: dict) -> str:
+    """The sampling mode of one benchmark result: per_op or batchN."""
+    batch_size = entry.get("batch_size")
+    if batch_size is None:
+        return "unknown"
+    size = int(batch_size)
+    return "per_op" if size <= 1 else f"batch{size}"
+
+
+def mode_explanation(groups: dict[str, list[dict]]) -> str:
+    """One line explaining the mode labels used by the latency table."""
+    batch_sizes = sorted(
+        {
+            int(entry["batch_size"])
+            for entries in groups.values()
+            for entry in entries
+            if entry.get("iterations", 0) > 0 and entry.get("batch_size", 1) > 1
+        }
+    )
+    if batch_sizes:
+        sizes = ", ".join(str(size) for size in batch_sizes)
+        return f"{BATCH_EXPLANATION} Batch sizes in this run: {sizes}."
+    return PER_OP_EXPLANATION
+
+
 def context_row(context: dict, key: str) -> str:
     value = context.get(key)
     return str(value) if value not in (None, "") else "unknown"
@@ -139,9 +175,6 @@ def context_row(context: dict, key: str) -> str:
 
 def render_header(report: dict, repetitions: int) -> list[str]:
     context = report.get("context", {})
-    mode = context_row(context, "latency_mode")
-    if mode == "batch16":
-        mode += " (batches of 16 operations)"
     return [
         "# Benchmark report",
         "",
@@ -153,7 +186,8 @@ def render_header(report: dict, repetitions: int) -> list[str]:
         f"| Build flags | {context_row(context, 'build_flags')} |",
         f"| Repetitions | {repetitions} |",
         f"| Timer | {context_row(context, 'timer')} |",
-        f"| Latency mode | {mode} |",
+        f"| Timer granularity | {context_row(context, 'timer_granularity_ns')} ns |",
+        f"| Latency mode request | {context_row(context, 'latency_mode')} |",
         f"| Timer overhead | {context_row(context, 'timer_overhead_ns')} ns |",
         "",
         f"> {CAVEAT}",
@@ -167,21 +201,23 @@ def render_latency_table(groups: dict[str, list[dict]]) -> list[str]:
     lines = [
         "## Latency (ns, median run per benchmark)",
         "",
-        "| Benchmark | p50 | p90 | p99 | p99.9 | max | p50 across runs |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| Benchmark | Mode | p50 | p90 | p99 | p99.9 | max | p50 across runs |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for name in names:
         entries = groups.get(name, [])
         check_counters(name, entries)
         if not any(entry.get("iterations", 0) > 0 for entry in entries):
             lines.append(
-                f"| {display_name(name)} | — | — | — | — | — | {skipped_reason(entries)} |"
+                f"| {display_name(name)} | — | — | — | — | — | — | {skipped_reason(entries)} |"
             )
             continue
         run = median_run(entries)
         cells = " | ".join(format_ns(run[key]) for key in PERCENTILE_KEYS)
-        lines.append(f"| {display_name(name)} | {cells} | {format_spread(entries)} |")
-    lines.append("")
+        lines.append(
+            f"| {display_name(name)} | {mode_label(run)} | {cells} | {format_spread(entries)} |"
+        )
+    lines += ["", f"> {mode_explanation(groups)}", ""]
     return lines
 
 

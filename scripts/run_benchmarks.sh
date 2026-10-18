@@ -9,8 +9,8 @@
 #   2. configures and builds the release preset,
 #   3. runs `lob_bench --self-test` and stops if the timing harness is broken,
 #   4. runs the DoD benchmark command with five repetitions
-#      (`AddOrder|Cancel|Market` plus MixedFlow, so the report has the
-#      throughput row),
+#      (`AddOrder|Cancel|Market|MixedFlow`, the DoD filter from decision C31,
+#      so the report has the throughput row),
 #   5. renders `build/release/bench.md` from the JSON with bench_report.py.
 #
 # It refuses to start (unless --force) while the machine is busy: the
