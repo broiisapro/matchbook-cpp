@@ -37,12 +37,22 @@ std::ostream& operator<<(std::ostream& out, const Op& op);
 std::ostream& operator<<(std::ostream& out, OpKind kind);
 std::string_view to_string(OpKind kind);
 
+/// Named operation-mix presets. `Default` is the general mixed workload;
+/// `LadderStress` redirects price selection to the price ladder's occupancy
+/// boundaries and enables the sweep and drain/refill weights.
+enum class OpMixPreset : std::uint8_t { Default = 0, LadderStress = 1 };
+
+std::string_view to_string(OpMixPreset preset);
+
 /// Relative weights for the generator. Operation-kind weights are relative to
 /// each other; the attribute fields are thresholds on [0, 100) and a value of
 /// zero disables that attribute. The generator never uses floating point, so
 /// the same seed and mix always produce the same stream on every standard
 /// library.
 struct OpMix {
+  // Preset. LadderStress switches price selection to the occupancy bitmap
+  // boundaries and enables sweep_weight and drain_refill_weight below.
+  OpMixPreset preset = OpMixPreset::Default;
   // Operation kind (relative weights).
   std::uint32_t submit_weight = 70;
   std::uint32_t cancel_weight = 20;
@@ -63,7 +73,19 @@ struct OpMix {
   std::uint32_t increase_weight = 20;
   std::uint32_t move_weight = 30;
   std::uint32_t invalid_price_weight = 8;
+  // LadderStress-only operation weights (relative to the kind weights).
+  std::uint32_t sweep_weight = 12;
+  std::uint32_t drain_refill_weight = 20;
 };
+
+/// Preset aimed at the array price ladder's failure modes: prices clustered at
+/// the occupancy bitmap word and summary boundaries (offsets 0, 63, 64, 65,
+/// 4095, 4096, 4097 and the top of the range, all relative to min_price, so
+/// min_price and max_price are included), long one-sided market sweeps that
+/// empty the best level while the next occupied level is far away, and
+/// repeated drain/refill cycles that create and remove the best level on
+/// alternating sides.
+OpMix ladder_stress_mix();
 
 /// Deterministic operation stream. The generator keeps its own view of the
 /// orders it has submitted (as submitted, not as filled) so cancels and
@@ -108,9 +130,26 @@ class OpGenerator {
   Op next_cancel();
   Op next_modify();
 
+  /// LadderStress path: weighted choice over the kind weights plus the sweep
+  /// and drain/refill weights.
+  Op next_ladder_stress();
+  /// One long one-sided sweep: a large market order on the persistent sweep
+  /// side that walks through every level of the opposite side.
+  Op next_sweep();
+  /// One step of the drain/refill cycle: submit then cancel, buy then sell.
+  Op next_drain_refill_step();
+
   Price choose_submit_price(Side side);
   Price choose_move_price(Price old_price);
   Price choose_edge_price();
+  /// Price at boundary `index` of the ladder's occupancy bitmaps, relative to
+  /// min_price: word ends 63/64/65, summary-word ends 4095/4096/4097, the
+  /// bottom (0) and the top of the configured range. A small jitter keeps a
+  /// few ticks around each boundary.
+  Price ladder_boundary_price(std::uint32_t index);
+  /// Price for a drain/refill refill: the modelled best level on `side`, or a
+  /// boundary price when the modelled side is empty.
+  Price drain_refill_price(Side side);
   Qty choose_invalid_qty();
 
   Target pick_target();
@@ -125,6 +164,16 @@ class OpGenerator {
   Config config_;
   OpMix mix_;
   Price mid_;
+
+  // LadderStress state: the sweep side persists across a run of sweeps, and
+  // the drain/refill cycle walks the boundary offsets one submit/cancel pair
+  // at a time.
+  Side sweep_side_ = Side::Buy;
+  bool sweep_side_set_ = false;
+  std::uint32_t ladder_offset_ = 0;
+  std::uint32_t ladder_cycle_step_ = 0;
+  OrderId ladder_cycle_id_ = 0;
+  Side ladder_cycle_side_ = Side::Buy;
 
   std::uint64_t next_id_ = 1;
   std::uint64_t next_unknown_id_ = 1ULL << 63;
