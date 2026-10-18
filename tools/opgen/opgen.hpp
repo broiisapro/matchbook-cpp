@@ -39,8 +39,9 @@ std::string_view to_string(OpKind kind);
 
 /// Named operation-mix presets. `Default` is the general mixed workload;
 /// `LadderStress` redirects price selection to the price ladder's occupancy
-/// boundaries and enables the sweep and drain/refill weights.
-enum class OpMixPreset : std::uint8_t { Default = 0, LadderStress = 1 };
+/// boundaries and enables the sweep and drain/refill weights; `Wide` is the
+/// default workload with a much wider mid band (see wide_mix).
+enum class OpMixPreset : std::uint8_t { Default = 0, LadderStress = 1, Wide = 2 };
 
 std::string_view to_string(OpMixPreset preset);
 
@@ -53,6 +54,9 @@ struct OpMix {
   // Preset. LadderStress switches price selection to the occupancy bitmap
   // boundaries and enables sweep_weight and drain_refill_weight below.
   OpMixPreset preset = OpMixPreset::Default;
+  // Half-width, in ticks, of the band around the mid that default-mode
+  // submits and moves draw from. The same value is used for both sides.
+  std::uint32_t mid_half_width = 10;
   // Operation kind (relative weights).
   std::uint32_t submit_weight = 70;
   std::uint32_t cancel_weight = 20;
@@ -86,6 +90,12 @@ struct OpMix {
 /// repeated drain/refill cycles that create and remove the best level on
 /// alternating sides.
 OpMix ladder_stress_mix();
+
+/// Preset for the wide differential configuration: the default workload with
+/// a mid band of 300 ticks instead of 10, so a 200000-tick range grows books
+/// hundreds of price levels deep while fills still keep the live order count
+/// in check.
+OpMix wide_mix();
 
 /// Deterministic operation stream. The generator keeps its own view of the
 /// orders it has submitted (as submitted, not as filled) so cancels and
