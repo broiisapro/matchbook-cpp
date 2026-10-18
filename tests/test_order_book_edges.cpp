@@ -291,6 +291,121 @@ TEST(OrderBookEdges, ModifyJustFilledIdIsUnknown) {
   EXPECT_EQ(book.order_count(), 1U);
 }
 
+TEST(OrderBookEdges, LevelsAtBothRangeEndsOfALargeRange) {
+  RecordingListener listener;
+  OrderBook book(config_with(1, 65536, 16, 16), listener);
+
+  book.submit(1, Side::Buy, OrderType::Limit, 1, 3);
+  book.submit(2, Side::Sell, OrderType::Limit, 65536, 7);
+  EXPECT_EQ(listener.events, (std::vector<Event>{
+                                 Accept{1},
+                                 BookUpdate{Side::Buy, 1, 3},
+                                 Accept{2},
+                                 BookUpdate{Side::Sell, 65536, 7},
+                             }));
+  EXPECT_EQ(book.best_bid(), std::optional<Price>{1});
+  EXPECT_EQ(book.best_ask(), std::optional<Price>{65536});
+
+  listener.clear();
+  book.submit(3, Side::Sell, OrderType::Limit, 1, 5);
+  EXPECT_EQ(listener.events, (std::vector<Event>{
+                                 Accept{3},
+                                 Trade{1, 3, 1, 3},
+                                 BookUpdate{Side::Buy, 1, 0},
+                                 BookUpdate{Side::Sell, 1, 2},
+                             }));
+  EXPECT_EQ(book.best_ask(), std::optional<Price>{1});
+  EXPECT_EQ(book.best_bid(), std::nullopt);
+
+  listener.clear();
+  book.cancel(3);
+  EXPECT_EQ(listener.events, (std::vector<Event>{Cancel{3, 2}, BookUpdate{Side::Sell, 1, 0}}));
+  EXPECT_EQ(book.best_ask(), std::optional<Price>{65536});
+  EXPECT_EQ(book.order_count(), 1U);
+}
+
+TEST(OrderBookEdges, MarketSweepAcrossWidePriceGaps) {
+  RecordingListener listener;
+  OrderBook book(config_with(1, 10000, 64, 64), listener);
+  book.submit(1, Side::Sell, OrderType::Limit, 100, 2);
+  book.submit(2, Side::Sell, OrderType::Limit, 200, 3);
+  book.submit(3, Side::Sell, OrderType::Limit, 4400, 4);
+  book.submit(4, Side::Sell, OrderType::Limit, 9950, 5);
+  book.submit(5, Side::Sell, OrderType::Limit, 10000, 6);
+  listener.clear();
+
+  book.submit(6, Side::Buy, OrderType::Market, 0, 100);
+
+  EXPECT_EQ(listener.events, (std::vector<Event>{
+                                 Accept{6},
+                                 Trade{1, 6, 100, 2},
+                                 BookUpdate{Side::Sell, 100, 0},
+                                 Trade{2, 6, 200, 3},
+                                 BookUpdate{Side::Sell, 200, 0},
+                                 Trade{3, 6, 4400, 4},
+                                 BookUpdate{Side::Sell, 4400, 0},
+                                 Trade{4, 6, 9950, 5},
+                                 BookUpdate{Side::Sell, 9950, 0},
+                                 Trade{5, 6, 10000, 6},
+                                 BookUpdate{Side::Sell, 10000, 0},
+                                 Cancel{6, 80},
+                             }));
+  EXPECT_EQ(book.best_ask(), std::nullopt);
+  EXPECT_EQ(book.order_count(), 0U);
+
+  book.submit(7, Side::Buy, OrderType::Limit, 9900, 1);
+  book.submit(8, Side::Buy, OrderType::Limit, 500, 1);
+  book.submit(9, Side::Buy, OrderType::Limit, 100, 1);
+  listener.clear();
+  book.submit(10, Side::Sell, OrderType::Limit, 100, 10);
+  EXPECT_EQ(listener.events, (std::vector<Event>{
+                                 Accept{10},
+                                 Trade{7, 10, 9900, 1},
+                                 BookUpdate{Side::Buy, 9900, 0},
+                                 Trade{8, 10, 500, 1},
+                                 BookUpdate{Side::Buy, 500, 0},
+                                 Trade{9, 10, 100, 1},
+                                 BookUpdate{Side::Buy, 100, 0},
+                                 BookUpdate{Side::Sell, 100, 7},
+                             }));
+  EXPECT_EQ(book.best_bid(), std::nullopt);
+  EXPECT_EQ(book.best_ask(), std::optional<Price>{100});
+  EXPECT_EQ(book.order_count(), 1U);
+}
+
+TEST(OrderBookEdges, CancelBestWhenTheNextLevelIsManyWordsAway) {
+  RecordingListener listener;
+  OrderBook book(config_with(1, 10000, 16, 16), listener);
+  book.submit(1, Side::Buy, OrderType::Limit, 10, 4);
+  book.submit(2, Side::Buy, OrderType::Limit, 4500, 5);
+  book.submit(3, Side::Sell, OrderType::Limit, 5000, 2);
+  book.submit(4, Side::Sell, OrderType::Limit, 9500, 3);
+  listener.clear();
+
+  book.cancel(2);
+  EXPECT_EQ(listener.events, (std::vector<Event>{Cancel{2, 5}, BookUpdate{Side::Buy, 4500, 0}}));
+  EXPECT_EQ(book.best_bid(), std::optional<Price>{10});
+
+  listener.clear();
+  book.cancel(3);
+  EXPECT_EQ(listener.events, (std::vector<Event>{Cancel{3, 2}, BookUpdate{Side::Sell, 5000, 0}}));
+  EXPECT_EQ(book.best_ask(), std::optional<Price>{9500});
+  EXPECT_EQ(book.best_bid(), std::optional<Price>{10});
+
+  listener.clear();
+  book.cancel(4);
+  book.cancel(1);
+  EXPECT_EQ(listener.events, (std::vector<Event>{
+                                 Cancel{4, 3},
+                                 BookUpdate{Side::Sell, 9500, 0},
+                                 Cancel{1, 4},
+                                 BookUpdate{Side::Buy, 10, 0},
+                             }));
+  EXPECT_EQ(book.best_bid(), std::nullopt);
+  EXPECT_EQ(book.best_ask(), std::nullopt);
+  EXPECT_EQ(book.order_count(), 0U);
+}
+
 TEST(OrderBookEdges, ModifyAtTheBoundariesWithRestingNeighbour) {
   RecordingListener listener;
   OrderBook book(config_with(10, 20, 16, 16), listener);
