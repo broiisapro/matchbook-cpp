@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <bit>
 #include <cstdint>
 #include <initializer_list>
 #include <optional>
@@ -258,7 +259,97 @@ struct OrderBookTestAccess {
     if (best_bid.has_value() && best_ask.has_value() && *best_bid >= *best_ask) {
       fail("book is crossed");
     }
+
+#if defined(LOB_PRICE_LADDER_ARRAY)
+    check_array_bitmap(book.ladder(Side::Buy), fail);
+    check_array_bitmap(book.ladder(Side::Sell), fail);
+#endif
   }
+
+#if defined(LOB_PRICE_LADDER_ARRAY)
+  /// Checks the array ladder's bitmap invariants against the engine's live
+  /// levels: every occupancy word agrees with its summary bit, every occupied
+  /// bit names a non-empty level, the count of occupied bits matches
+  /// level_count(), and the tracked best is the highest bid / lowest ask.
+  /// O(word_count + levels) per side.
+  template <class Fail>
+  static void check_array_bitmap(const OrderBook::Ladder& ladder, const Fail& fail) {
+    std::uint32_t occupied_levels = 0;
+    bool have_true_best = false;
+    std::size_t true_best = 0;
+
+    for (std::size_t word = 0; word < ladder.word_count_; ++word) {
+      const std::uint64_t bits = ladder.words_[word];
+      const bool summary_bit =
+          (ladder.summary_[word >> 6] & (std::uint64_t{1} << (word & 63))) != 0;
+      if (summary_bit != (bits != 0)) {
+        fail("summary bit does not match its occupancy word");
+        return;
+      }
+      std::uint64_t remaining = bits;
+      while (remaining != 0) {
+        const std::size_t index = (word << 6) + std::countr_zero(remaining);
+        remaining &= remaining - 1;
+        if (index >= ladder.range_) {
+          fail("occupied bit past the price range");
+          return;
+        }
+        const Level& level = ladder.levels_[index];
+        if (level.head == kNullIndex || level.tail == kNullIndex) {
+          fail("an occupied level must not be empty");
+          return;
+        }
+        if (level.order_count == 0 || level.total_qty <= 0) {
+          fail("an occupied level must hold orders");
+          return;
+        }
+        ++occupied_levels;
+        if (!have_true_best ||
+            (ladder.side_ == Side::Buy ? index > true_best : index < true_best)) {
+          true_best = index;
+          have_true_best = true;
+        }
+      }
+    }
+
+    if (occupied_levels != ladder.level_count_) {
+      fail("level_count does not match the number of occupied bits");
+      return;
+    }
+    if (have_true_best != ladder.has_best_) {
+      fail("tracked best presence does not match the bitmap");
+      return;
+    }
+    if (have_true_best && ladder.best_index_ != true_best) {
+      fail("tracked best does not match the highest/lowest occupied index");
+      return;
+    }
+    if (!have_true_best && ladder.best() != nullptr) {
+      fail("an empty side must not report a best level");
+    }
+  }
+
+  /// Full-slot scan: every slot outside the bitmap must be a fresh, empty
+  /// Level. O(range); it is only called from the small hand-built book test,
+  /// never from the per-operation stream.
+  static void check_array_slots_clean(const OrderBook& book) {
+    for (const Side side : {Side::Buy, Side::Sell}) {
+      const OrderBook::Ladder& ladder = book.ladder(side);
+      for (std::size_t index = 0; index < ladder.range_; ++index) {
+        const bool occupied = (ladder.words_[index >> 6] & (std::uint64_t{1} << (index & 63))) != 0;
+        if (occupied) {
+          continue;
+        }
+        const Level& level = ladder.levels_[index];
+        if (level.head != kNullIndex || level.tail != kNullIndex || level.total_qty != 0 ||
+            level.order_count != 0) {
+          ADD_FAILURE() << "a slot outside the bitmap is not a fresh empty level";
+          return;
+        }
+      }
+    }
+  }
+#endif
 };
 
 }  // namespace lob
@@ -306,6 +397,9 @@ TEST(OrderBookInvariants, CheckerPassesOnAHealthyBook) {
   book.cancel(2);
   book.modify(3, 200, 2);
   OrderBookTestAccess::check(book);
+#if defined(LOB_PRICE_LADDER_ARRAY)
+  OrderBookTestAccess::check_array_slots_clean(book);
+#endif
   EXPECT_EQ(book.order_count(), 3U);
 }
 
