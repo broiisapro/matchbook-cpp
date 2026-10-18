@@ -93,8 +93,7 @@ OpMix ladder_stress_mix();
 
 /// Preset for the wide differential configuration: the default workload with
 /// a mid band of 300 ticks instead of 10, so a 200000-tick range grows books
-/// hundreds of price levels deep while fills still keep the live order count
-/// in check.
+/// hundreds of price levels deep when the capacity allows.
 OpMix wide_mix();
 
 /// Deterministic operation stream. The generator keeps its own view of the
