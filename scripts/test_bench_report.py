@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -14,6 +15,8 @@ sys.path.insert(0, str(SCRIPTS))
 import bench_report  # noqa: E402  (import after sys.path setup)
 
 SAMPLE = REPO / "bench" / "testdata" / "sample_bench.json"
+TREE_SAMPLE = REPO / "bench" / "testdata" / "sample_tree_bench.json"
+ARRAY_SAMPLE = REPO / "bench" / "testdata" / "sample_array_bench.json"
 
 
 def make_entry(
@@ -146,6 +149,98 @@ def test_mixed_flow_throughput_row() -> None:
     text = bench_report.render(minimal_report(entries))
     rows = [line for line in text.splitlines() if line.startswith("| Mixed flow |")]
     assert rows and "1,000,000" in rows[-1]
+
+
+def test_comparison_renders_committed_samples() -> None:
+    before = bench_report.load_report(TREE_SAMPLE)
+    after = bench_report.load_report(ARRAY_SAMPLE)
+    text = bench_report.render_comparison(before, after)
+    assert "# Benchmark comparison" in text
+    for field in ("| CPU |", "| Compiler |", "| Timer granularity |", "| Latency mode |",
+                  "| Repetitions |"):
+        assert field in text
+    assert "| Price ladder | tree | array |" in text
+    assert "| Repetitions | 2 | 2 |" in text
+    for name in ("Add order, non-crossing", "Cancel, resting", "Mixed flow"):
+        assert name in text
+    assert "Ratio (after/before)" in text
+    assert "×" in text
+    assert bench_report.COMPARISON_CAVEAT in text
+
+
+def test_comparison_ratios_and_throughput() -> None:
+    before = minimal_report([
+        make_entry("AddOrder_NonCrossing", 0, 100, 110, 120, 130, 150),
+        make_entry("MixedFlow", 0, 100, 110, 120, 130, 150, items=1_000_000.0),
+    ])
+    after = minimal_report([
+        make_entry("AddOrder_NonCrossing", 0, 50, 55, 60, 65, 75),
+        make_entry("MixedFlow", 0, 100, 110, 120, 130, 150, items=2_000_000.0),
+    ])
+    text = bench_report.render_comparison(before, after)
+    assert "| 100 | 50 | 0.50× |" in text
+    assert "| 1,000,000 | 2,000,000 | 2.00× |" in text
+
+
+def test_comparison_skipped_side() -> None:
+    before = minimal_report([make_entry("Cancel_Resting", 0, 100, 110, 120, 130, 150)])
+    after = minimal_report([
+        {"name": "Cancel_Resting", "run_type": "iteration", "iterations": 0},
+    ])
+    text = bench_report.render_comparison(before, after)
+    rows = [line for line in text.splitlines() if line.startswith("| Cancel, resting")]
+    assert rows and "skipped" in rows[0]
+
+
+def write_round(path: Path, indices: list[int], date: str) -> None:
+    entries = [
+        make_entry("AddOrder_NonCrossing", index, 100.0 + index, 110, 120, 130, 150)
+        for index in indices
+    ]
+    for entry in entries:
+        entry["repetitions"] = len(indices)
+    entries.append({"name": "AddOrder_NonCrossing", "run_type": "aggregate", "iterations": 2})
+    path.write_text(json.dumps(minimal_report(entries, context={"date": date, "cpu": "Apple M5"})))
+
+
+def test_merge_reindexes_repetitions_and_drops_aggregates(tmp_path: Path) -> None:
+    first = tmp_path / "round0.json"
+    second = tmp_path / "round1.json"
+    write_round(first, [0, 1], "round-0")
+    write_round(second, [0, 1], "round-1")
+    merged = bench_report.merge_reports([first, second])
+    assert merged["context"]["date"] == "round-1"
+    assert merged["context"]["cpu"] == "Apple M5"
+    entries = merged["benchmarks"]
+    assert all(entry["run_type"] == "iteration" for entry in entries)
+    assert [entry["repetition_index"] for entry in entries] == [0, 1, 2, 3]
+    assert all(entry["repetitions"] == 4 for entry in entries)
+
+
+def test_cli_merge_writes_the_output_file(tmp_path: Path) -> None:
+    first = tmp_path / "round0.json"
+    second = tmp_path / "round1.json"
+    write_round(first, [0], "round-0")
+    write_round(second, [0], "round-1")
+    out = tmp_path / "bench.json"
+    status = bench_report.main(["bench_report.py", "--merge", str(out), str(first), str(second)])
+    assert status == 0
+    assert json.loads(out.read_text())["benchmarks"][0]["repetitions"] == 2
+
+
+def test_cli_comparison_prints_the_report(capsys: pytest.CaptureFixture[str]) -> None:
+    status = bench_report.main(
+        ["bench_report.py", "--before", str(TREE_SAMPLE), "--after", str(ARRAY_SAMPLE)]
+    )
+    assert status == 0
+    assert "# Benchmark comparison" in capsys.readouterr().out
+
+
+def test_cli_rejects_partial_comparison_arguments(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert bench_report.main(["bench_report.py", "--before", "x.json"]) == 2
+    assert "usage" in capsys.readouterr().err
 
 
 def test_sample_percentiles_are_monotonic_and_consistent() -> None:
