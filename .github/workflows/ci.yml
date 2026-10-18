@@ -1,7 +1,6 @@
 # CI runs on one self-hosted runner whose environment forces single-threaded,
-# low-priority work. Checkouts keep the runner's persistent workspace
-# (`clean: false`) so `build/<preset>` survives across jobs and pushes and
-# re-runs are incremental; `test` reuses the `build` job's release build.
+# low-priority work. Checkouts keep the persistent workspace (`clean: false`),
+# so builds stay incremental and `test` reuses the `build` job's release tree.
 name: ci
 
 on:
