@@ -36,7 +36,6 @@ using lob::opgen::Op;
 using lob::opgen::OpGenerator;
 using lob::opgen::OpKind;
 using lob::opgen::OpMix;
-using lob::opgen::OpMixPreset;
 using lob::opgen::run_differential;
 using lob::ref::ReferenceBook;
 

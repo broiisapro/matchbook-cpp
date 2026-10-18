@@ -209,12 +209,11 @@ TEST(OpGenerator, LadderStressPricesClusterAtBitmapBoundaries) {
     EXPECT_TRUE(near_boundary) << op;
   }
 
+  // Index 0 is min_price and index 7 max_price, so this also pins orders at
+  // both ends of the configured range.
   for (std::size_t i = 0; i < 8; ++i) {
     EXPECT_TRUE(saw_exact[i]) << "boundary index " << i << " never produced its exact price";
   }
-  // Orders at both ends of the configured range.
-  EXPECT_TRUE(saw_exact[0]);
-  EXPECT_TRUE(saw_exact[7]);
 }
 
 TEST(OpGenerator, LadderStressIncludesLongOneSidedSweeps) {
