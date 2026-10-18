@@ -7,6 +7,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <sstream>
@@ -25,13 +27,19 @@ namespace {
 using lob::Config;
 using lob::OrderType;
 using lob::Side;
+using lob::opgen::ladder_stress_mix;
 using lob::opgen::Op;
 using lob::opgen::OpGenerator;
 using lob::opgen::OpKind;
+using lob::opgen::OpMix;
 
 constexpr std::uint64_t kGoldenSeed = 12345;
 constexpr Config kGoldenConfig{100, 200, 20000, 500};
 constexpr std::uint64_t kGoldenHash = 0x2984d944967473fdULL;
+
+constexpr std::uint64_t kLadderStressSeed = 424242;
+constexpr Config kLadderStressConfig{1, 20000, 4096, 64};
+constexpr std::uint64_t kLadderStressHash = 0x0ad375a4508e1b14ULL;
 
 std::vector<std::byte> serialize(const std::vector<Op>& ops) {
   std::vector<std::byte> bytes;
@@ -57,8 +65,9 @@ std::uint64_t hash_ops(const std::vector<Op>& ops) {
   return XXH64(bytes.data(), bytes.size(), 0);
 }
 
-std::vector<Op> generate(std::uint64_t seed, const Config& config, std::size_t count) {
-  OpGenerator generator(seed, config);
+std::vector<Op> generate(std::uint64_t seed, const Config& config, std::size_t count,
+                         OpMix mix = {}) {
+  OpGenerator generator(seed, config, mix);
   std::vector<Op> ops;
   ops.reserve(count);
   for (std::size_t i = 0; i < count; ++i) {
@@ -158,6 +167,109 @@ TEST(OpGenerator, PricesStayWithinTwoTicksOfTheConfiguredRange) {
   EXPECT_TRUE(saw_max);
   EXPECT_TRUE(saw_below);
   EXPECT_TRUE(saw_above);
+}
+
+TEST(OpGenerator, LadderStressGoldenHash) {
+  const std::vector<Op> first =
+      generate(kLadderStressSeed, kLadderStressConfig, 10000, ladder_stress_mix());
+  const std::vector<Op> second =
+      generate(kLadderStressSeed, kLadderStressConfig, 10000, ladder_stress_mix());
+
+  EXPECT_EQ(first, second);
+  EXPECT_EQ(hash_ops(first), kLadderStressHash);
+}
+
+TEST(OpGenerator, LadderStressPricesClusterAtBitmapBoundaries) {
+  const std::vector<Op> ops =
+      generate(kLadderStressSeed, kLadderStressConfig, 100000, ladder_stress_mix());
+
+  // Offsets above min_price: 63/64/65 end the first occupancy word and
+  // 4095/4096/4097 the first summary word; `top` is the configured maximum.
+  constexpr std::int64_t kOffsets[] = {0, 63, 64, 65, 4095, 4096, 4097, -1};
+  const std::int64_t min = kLadderStressConfig.min_price;
+  const std::int64_t max = kLadderStressConfig.max_price;
+
+  std::array<bool, 8> saw_exact{};
+  for (const Op& op : ops) {
+    if (op.kind == OpKind::Cancel || (op.kind == OpKind::Submit && op.type == OrderType::Market)) {
+      continue;
+    }
+    // Every price sits within two ticks of a boundary offset.
+    bool near_boundary = false;
+    for (std::size_t i = 0; i < 8; ++i) {
+      const std::int64_t offset = kOffsets[i] < 0 ? max - min : kOffsets[i];
+      const std::int64_t price = std::clamp<std::int64_t>(min + offset, min, max);
+      if (op.price >= price - 2 && op.price <= price + 2) {
+        near_boundary = true;
+        if (op.price == price) {
+          saw_exact[i] = true;
+        }
+      }
+    }
+    EXPECT_TRUE(near_boundary) << op;
+  }
+
+  for (std::size_t i = 0; i < 8; ++i) {
+    EXPECT_TRUE(saw_exact[i]) << "boundary index " << i << " never produced its exact price";
+  }
+  // Orders at both ends of the configured range.
+  EXPECT_TRUE(saw_exact[0]);
+  EXPECT_TRUE(saw_exact[7]);
+}
+
+TEST(OpGenerator, LadderStressIncludesLongOneSidedSweeps) {
+  const std::vector<Op> ops =
+      generate(kLadderStressSeed, kLadderStressConfig, 100000, ladder_stress_mix());
+
+  std::size_t buy_sweeps = 0;
+  std::size_t sell_sweeps = 0;
+  for (const Op& op : ops) {
+    if (op.kind != OpKind::Submit || op.type != OrderType::Market) {
+      continue;
+    }
+    // market_weight is zero in this preset, so every market order is a sweep.
+    EXPECT_EQ(op.price, 0);
+    EXPECT_GE(op.qty, 100000);
+    if (op.side == Side::Buy) {
+      ++buy_sweeps;
+    } else {
+      ++sell_sweeps;
+    }
+  }
+  EXPECT_GT(buy_sweeps, 0U);
+  EXPECT_GT(sell_sweeps, 0U);
+}
+
+TEST(OpGenerator, LadderStressDrainRefillCycleAlternatesSidesAndWalksBoundaries) {
+  OpMix mix = ladder_stress_mix();
+  mix.submit_weight = 0;
+  mix.cancel_weight = 0;
+  mix.modify_weight = 0;
+  mix.sweep_weight = 0;
+  OpGenerator generator(kLadderStressSeed, kLadderStressConfig, mix);
+
+  const Op add_buy = generator.next();
+  const Op cancel_buy = generator.next();
+  const Op add_sell = generator.next();
+  const Op cancel_sell = generator.next();
+  const Op next_add_buy = generator.next();
+
+  EXPECT_EQ(add_buy.kind, OpKind::Submit);
+  EXPECT_EQ(add_buy.side, Side::Buy);
+  EXPECT_EQ(add_buy.type, OrderType::Limit);
+  EXPECT_EQ(cancel_buy.kind, OpKind::Cancel);
+  EXPECT_EQ(cancel_buy.id, add_buy.id);
+  EXPECT_EQ(add_sell.kind, OpKind::Submit);
+  EXPECT_EQ(add_sell.side, Side::Sell);
+  EXPECT_EQ(cancel_sell.kind, OpKind::Cancel);
+  EXPECT_EQ(cancel_sell.id, add_sell.id);
+
+  // The first cycle uses the bottom boundary (offset 0 + jitter), the second
+  // the 63/64/65 word-end cluster.
+  EXPECT_GE(add_buy.price, kLadderStressConfig.min_price);
+  EXPECT_LE(add_buy.price, kLadderStressConfig.min_price + 2);
+  EXPECT_GE(next_add_buy.price, kLadderStressConfig.min_price + 61);
+  EXPECT_LE(next_add_buy.price, kLadderStressConfig.min_price + 67);
 }
 
 TEST(OpGenerator, PrintsKindAndFields) {
