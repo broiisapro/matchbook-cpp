@@ -307,32 +307,34 @@ inline std::string describe_granularity(const GranularityMeasurement& measuremen
   return text;
 }
 
-/// Cost of reading the counter once, as the median interval between two
+/// Cost of reading the counter once, as the fastest interval between two
 /// back-to-back `now_ticks()` calls. A timed region pays this once (for the
 /// closing read), so measurements subtract it once per timed region: once per
-/// operation in per-op mode, once per batch in batch mode.
+/// operation in per-op mode, once per batch in batch mode. Preemption can only
+/// inflate an interval, so the minimum is the cleanest estimate and can never
+/// over-subtract from a measurement on a busy machine.
 struct TimerOverhead {
-  Ticks ticks;  ///< median interval in counter ticks
+  Ticks ticks;  ///< fastest interval in counter ticks
   double ns;    ///< the same value in nanoseconds
 };
 
 inline TimerOverhead calibrate_overhead(std::size_t samples = 10001) {
-  std::vector<Ticks> deltas;
-  deltas.reserve(samples);
   for (std::size_t i = 0; i < 64; ++i) {  // warm up caches and the branch predictor
     const Ticks begin = now_ticks();
     const Ticks end = now_ticks();
     (void)begin;
     (void)end;
   }
+  Ticks best = 0;
   for (std::size_t i = 0; i < samples; ++i) {
     const Ticks begin = now_ticks();
     const Ticks end = now_ticks();
-    deltas.push_back(end - begin);
+    const Ticks delta = end - begin;
+    if (i == 0 || delta < best) {
+      best = delta;
+    }
   }
-  std::sort(deltas.begin(), deltas.end());
-  const Ticks median = deltas[deltas.size() / 2];
-  return TimerOverhead{median, ticks_to_ns(median)};
+  return TimerOverhead{best, ticks_to_ns(best)};
 }
 
 }  // namespace lob::bench

@@ -29,11 +29,22 @@ void spin(std::uint64_t iterations) {
 }
 
 /// Number of `spin` iterations whose measured cost is closest to target_ns.
-/// A long probe gives the starting guess; three short refinement passes then
-/// measure the actual loop and scale it, which absorbs frequency and branch
-/// predictor state differences between the probe and the timed loop.
+/// A long probe gives the starting guess; short refinement passes then measure
+/// the actual loop and scale it, which absorbs frequency and branch predictor
+/// state differences between the probe and the timed loop. The refinement uses
+/// the ~5th percentile of 41 samples: preemption on a busy machine only ever
+/// inflates a measurement, so a low percentile recovers the true loop cost
+/// where a median can collapse the iteration count. When even that percentile
+/// lands below the timer's step (a loop shorter than 41.7 ns on the M5 cannot
+/// be timed at all) the loop is multiplied instead of scaled, so the estimate
+/// climbs out of the unmeasurable range instead of collapsing to one
+/// iteration.
 std::uint64_t iterations_for_ns(double target_ns) {
   constexpr std::uint64_t kProbeIterations = 1'000'000;
+  constexpr std::uint64_t kMaxIterations = std::uint64_t{1} << 20U;
+  constexpr int kRefinementSamples = 41;
+  constexpr int kRefinementPick = 2;  // ~5th percentile
+  const double min_measurable_ns = 2.0 * timer_granularity().step_ns;
   spin(kProbeIterations);  // warm up
   const Ticks probe_begin = now_ticks();
   spin(kProbeIterations);
@@ -45,21 +56,25 @@ std::uint64_t iterations_for_ns(double target_ns) {
   if (iterations == 0) {
     iterations = 1;
   }
-  for (int pass = 0; pass < 3; ++pass) {
-    Ticks samples[5];
+  for (int pass = 0; pass < 8; ++pass) {
+    Ticks samples[kRefinementSamples];
     for (Ticks& sample : samples) {
       const Ticks begin = now_ticks();
       spin(iterations);
       sample = now_ticks() - begin;
     }
     std::sort(std::begin(samples), std::end(samples));
-    const double measured_ns = ticks_to_ns(samples[2]);
-    if (measured_ns <= 0.0) {
-      break;
+    const double measured_ns = ticks_to_ns(samples[kRefinementPick]);
+    if (measured_ns < min_measurable_ns) {
+      iterations = std::min<std::uint64_t>(iterations * 4, kMaxIterations);
+      continue;
     }
     const auto adjusted = static_cast<std::uint64_t>(
         std::llround(static_cast<double>(iterations) * target_ns / measured_ns));
-    iterations = adjusted == 0 ? 1 : adjusted;
+    if (adjusted == iterations || adjusted == 0) {
+      break;
+    }
+    iterations = adjusted;
   }
   return iterations;
 }
