@@ -1,3 +1,7 @@
+# CI runs on one self-hosted runner whose environment forces single-threaded,
+# low-priority work. Checkouts keep the runner's persistent workspace
+# (`clean: false`) so `build/<preset>` survives across jobs and pushes and
+# re-runs are incremental; `test` reuses the `build` job's release build.
 name: ci
 
 on:
@@ -17,7 +21,11 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 45
     steps:
+      # clean: false keeps the persistent workspace, so build/release is
+      # incremental across jobs and pushes.
       - uses: actions/checkout@v7
+        with:
+          clean: false
       - name: Bootstrap vcpkg
         run: |
           echo "VCPKG_ROOT=$HOME/.cache/matchbook/vcpkg" >> "$GITHUB_ENV"
@@ -29,10 +37,15 @@ jobs:
 
   test:
     name: test
+    needs: build
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 45
     steps:
+      # Same runner and workspace as `build`: the release build is reused, and
+      # only the configure step re-runs (cheap when nothing changed).
       - uses: actions/checkout@v7
+        with:
+          clean: false
       - name: Bootstrap vcpkg
         run: |
           echo "VCPKG_ROOT=$HOME/.cache/matchbook/vcpkg" >> "$GITHUB_ENV"
@@ -50,6 +63,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+        with:
+          clean: false
       - name: Bootstrap vcpkg
         run: |
           echo "VCPKG_ROOT=$HOME/.cache/matchbook/vcpkg" >> "$GITHUB_ENV"
@@ -77,11 +92,15 @@ jobs:
 
   tidy:
     name: tidy
+    # Advisory and expensive: only a manual dispatch runs it.
+    if: github.event_name == 'workflow_dispatch'
     continue-on-error: true
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+        with:
+          clean: false
       - name: Bootstrap vcpkg
         run: |
           echo "VCPKG_ROOT=$HOME/.cache/matchbook/vcpkg" >> "$GITHUB_ENV"
