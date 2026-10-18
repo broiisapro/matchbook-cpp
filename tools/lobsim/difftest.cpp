@@ -31,9 +31,12 @@ using lob::Qty;
 using lob::Side;
 using lob::opgen::apply_op;
 using lob::opgen::DiffResult;
+using lob::opgen::ladder_stress_mix;
 using lob::opgen::Op;
 using lob::opgen::OpGenerator;
 using lob::opgen::OpKind;
+using lob::opgen::OpMix;
+using lob::opgen::OpMixPreset;
 using lob::opgen::run_differential;
 using lob::ref::ReferenceBook;
 
@@ -66,6 +69,10 @@ constexpr std::string_view kUsage =
     "options:\n"
     "  --engine-a E         fast | reference (default fast)\n"
     "  --engine-b E         fast | reference (default reference)\n"
+    "  --mix M              default | ladder_stress (default default);\n"
+    "                       ladder_stress clusters prices at the ladder bitmap\n"
+    "                       boundaries, sweeps a side empty and drains/refills\n"
+    "                       the best level\n"
     "  --min-price P        override the config minimum price\n"
     "  --max-price P        override the config maximum price\n"
     "  --max-orders N       override the config maximum live orders\n"
@@ -81,6 +88,7 @@ struct DiffOptions {
   EngineKind engine_a = EngineKind::Fast;
   EngineKind engine_b = EngineKind::Reference;
   Config config = default_diff_config();
+  OpMix mix{};
   bool progress = false;
   bool help = false;
 };
@@ -101,6 +109,18 @@ bool parse_engine(std::string_view text, EngineKind& out) {
   }
   if (text == "reference") {
     out = EngineKind::Reference;
+    return true;
+  }
+  return false;
+}
+
+bool parse_mix(std::string_view text, OpMix& out) {
+  if (text == "default") {
+    out = OpMix{};
+    return true;
+  }
+  if (text == "ladder_stress") {
+    out = ladder_stress_mix();
     return true;
   }
   return false;
@@ -153,6 +173,12 @@ bool parse_args(int argc, char** argv, DiffOptions& options) {
     } else if (flag == "--engine-b") {
       if (!parse_engine(value, options.engine_b)) {
         std::fprintf(stderr, "difftest: --engine-b must be fast or reference, got '%s'\n",
+                     std::string(value).c_str());
+        return false;
+      }
+    } else if (flag == "--mix") {
+      if (!parse_mix(value, options.mix)) {
+        std::fprintf(stderr, "difftest: --mix must be default or ladder_stress, got '%s'\n",
                      std::string(value).c_str());
         return false;
       }
@@ -315,7 +341,7 @@ void report_mismatch(const DiffOptions& options, const DiffResult& result) {
   std::printf("digest-a: 0x%016llx\n", static_cast<unsigned long long>(result.digest_a));
   std::printf("digest-b: 0x%016llx\n", static_cast<unsigned long long>(result.digest_b));
 
-  OpGenerator replay(options.seed, options.config);
+  OpGenerator replay(options.seed, options.config, options.mix);
   std::vector<Op> prefix;
   prefix.reserve(static_cast<std::size_t>(result.first_mismatch_index) + 1);
   for (std::uint64_t i = 0; i <= result.first_mismatch_index; ++i) {
@@ -333,7 +359,7 @@ void report_mismatch(const DiffOptions& options, const DiffResult& result) {
 
 template <class EngineA, class EngineB>
 int run_selected(const DiffOptions& options) {
-  OpGenerator generator(options.seed, options.config);
+  OpGenerator generator(options.seed, options.config, options.mix);
   std::function<void(std::uint64_t)> progress;
   if (options.progress) {
     progress = [](std::uint64_t done) {
@@ -354,6 +380,7 @@ int run_selected(const DiffOptions& options) {
 
   std::printf("engine-a: %s\n", engine_name(options.engine_a));
   std::printf("engine-b: %s\n", engine_name(options.engine_b));
+  std::printf("mix: %s\n", std::string(lob::opgen::to_string(options.mix.preset)).c_str());
   std::printf("min-price: %lld\n", static_cast<long long>(options.config.min_price));
   std::printf("max-price: %lld\n", static_cast<long long>(options.config.max_price));
   std::printf("max-orders: %u\n", options.config.max_orders);
