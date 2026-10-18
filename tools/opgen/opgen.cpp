@@ -8,6 +8,19 @@ namespace {
 
 constexpr std::size_t kMaxReusableIds = 1024;
 
+/// Boundary offsets, in ticks above min_price, that the ladder-stress preset
+/// clusters around: 63/64/65 straddle the first occupancy word boundary and
+/// 4095/4096/4097 the first summary word boundary. Entry 0 is the bottom and
+/// the last entry is the top of the configured range (filled in per call).
+constexpr std::size_t kLadderBoundaryCount = 8;
+constexpr std::uint64_t kLadderBoundaryOffsets[kLadderBoundaryCount] = {0,    63,   64,   65,
+                                                                        4095, 4096, 4097, 0};
+
+/// Sweep size: large enough to empty a differential test's whole side in one
+/// market order, so the next best level is far away.
+constexpr Qty kSweepBaseQty = 100000;
+constexpr std::uint64_t kSweepExtraQty = 100000;
+
 }  // namespace
 
 std::string_view to_string(OpKind kind) {
@@ -20,6 +33,38 @@ std::string_view to_string(OpKind kind) {
       return "modify";
   }
   return "unknown";
+}
+
+std::string_view to_string(OpMixPreset preset) {
+  switch (preset) {
+    case OpMixPreset::Default:
+      return "default";
+    case OpMixPreset::LadderStress:
+      return "ladder_stress";
+  }
+  return "default";
+}
+
+OpMix ladder_stress_mix() {
+  OpMix mix;
+  mix.preset = OpMixPreset::LadderStress;
+  mix.submit_weight = 55;
+  mix.cancel_weight = 15;
+  mix.modify_weight = 10;
+  mix.sweep_weight = 12;
+  mix.drain_refill_weight = 20;
+  // Sweeps are the deliberate market orders in this preset.
+  mix.market_weight = 0;
+  mix.ioc_weight = 4;
+  // Boundary clusters cross each other on their own, and min_price and
+  // max_price come from the boundary set, so the default price modes are off.
+  mix.crossing_weight = 0;
+  mix.edge_price_weight = 0;
+  mix.invalid_qty_weight = 2;
+  mix.duplicate_id_weight = 3;
+  mix.reuse_id_weight = 5;
+  mix.unknown_id_weight = 5;
+  return mix;
 }
 
 std::ostream& operator<<(std::ostream& out, OpKind kind) { return out << to_string(kind); }
@@ -65,6 +110,10 @@ Price OpGenerator::uniform_price(Price lo, Price hi) {
 }
 
 Op OpGenerator::next() {
+  if (mix_.preset == OpMixPreset::LadderStress) {
+    return next_ladder_stress();
+  }
+
   if (config_.min_price < config_.max_price) {
     const auto step = static_cast<Price>(below(5));
     mid_ = std::clamp<Price>(mid_ + step - 2, config_.min_price, config_.max_price);
@@ -82,6 +131,69 @@ Op OpGenerator::next() {
     return next_cancel();
   }
   return next_modify();
+}
+
+Op OpGenerator::next_ladder_stress() {
+  const std::uint32_t total = mix_.submit_weight + mix_.cancel_weight + mix_.modify_weight +
+                              mix_.sweep_weight + mix_.drain_refill_weight;
+  if (total == 0) {
+    return next_submit();
+  }
+  auto roll = static_cast<std::uint32_t>(below(total));
+  if (roll < mix_.submit_weight) {
+    return next_submit();
+  }
+  roll -= mix_.submit_weight;
+  if (roll < mix_.cancel_weight) {
+    return next_cancel();
+  }
+  roll -= mix_.cancel_weight;
+  if (roll < mix_.modify_weight) {
+    return next_modify();
+  }
+  roll -= mix_.modify_weight;
+  if (roll < mix_.sweep_weight) {
+    return next_sweep();
+  }
+  return next_drain_refill_step();
+}
+
+Op OpGenerator::next_sweep() {
+  if (!sweep_side_set_) {
+    sweep_side_ = below(2) == 0 ? Side::Buy : Side::Sell;
+    sweep_side_set_ = true;
+  } else if (chance(35)) {
+    sweep_side_ = sweep_side_ == Side::Buy ? Side::Sell : Side::Buy;
+  }
+  const OrderId id = next_id_++;
+  const Qty qty = kSweepBaseQty + static_cast<Qty>(below(kSweepExtraQty));
+  return Op{OpKind::Submit, id, sweep_side_, OrderType::Market, 0, qty};
+}
+
+Op OpGenerator::next_drain_refill_step() {
+  if (ladder_cycle_step_ % 2 == 0) {
+    const Side side = ladder_cycle_step_ == 0 ? Side::Buy : Side::Sell;
+    const Price price = drain_refill_price(side);
+    const OrderId id = next_id_++;
+    const Qty qty = static_cast<Qty>(1 + below(100));
+    model_add(side, price, id, qty);
+    ladder_cycle_id_ = id;
+    ladder_cycle_side_ = side;
+    ++ladder_cycle_step_;
+    return Op{OpKind::Submit, id, side, OrderType::Limit, price, qty};
+  }
+
+  const OrderId id = ladder_cycle_id_;
+  const Side side = ladder_cycle_side_;
+  if (model_.find(id) != model_.end()) {
+    model_remove(id, true);
+  }
+  ++ladder_cycle_step_;
+  if (ladder_cycle_step_ == 4) {
+    ladder_cycle_step_ = 0;
+    ladder_offset_ = static_cast<std::uint32_t>((ladder_offset_ + 1) % kLadderBoundaryCount);
+  }
+  return Op{OpKind::Cancel, id, side, OrderType::Limit, 0, 0};
 }
 
 Op OpGenerator::next_submit() {
@@ -168,7 +280,10 @@ Op OpGenerator::next_modify() {
     return Op{OpKind::Modify, target.id, location.side, OrderType::Limit, location.price, qty};
   }
   if (take(mix_.move_weight)) {
-    const Price price = choose_move_price(location.price);
+    const Price price =
+        mix_.preset == OpMixPreset::LadderStress
+            ? ladder_boundary_price(static_cast<std::uint32_t>(below(kLadderBoundaryCount)))
+            : choose_move_price(location.price);
     const Qty qty = static_cast<Qty>(1 + below(100));
     model_remove(target.id, false);
     model_add(location.side, price, target.id, qty);
@@ -181,6 +296,9 @@ Op OpGenerator::next_modify() {
 }
 
 Price OpGenerator::choose_submit_price(Side side) {
+  if (mix_.preset == OpMixPreset::LadderStress) {
+    return ladder_boundary_price(static_cast<std::uint32_t>(below(kLadderBoundaryCount)));
+  }
   if (chance(mix_.crossing_weight)) {
     if (side == Side::Buy && !ask_levels_.empty()) {
       return ask_levels_.begin()->first;
@@ -215,6 +333,32 @@ Price OpGenerator::choose_edge_price() {
   const Price options[6] = {config_.min_price,     config_.max_price,     config_.min_price - 1,
                             config_.max_price + 1, config_.min_price - 2, config_.max_price + 2};
   return options[static_cast<std::size_t>(below(6))];
+}
+
+Price OpGenerator::ladder_boundary_price(std::uint32_t index) {
+  const std::uint64_t span = static_cast<std::uint64_t>(config_.max_price - config_.min_price);
+  const std::size_t slot = static_cast<std::size_t>(index) % kLadderBoundaryCount;
+  std::uint64_t offset = kLadderBoundaryOffsets[slot];
+  if (slot == kLadderBoundaryCount - 1) {
+    offset = span;
+  }
+  offset = std::min(offset, span);
+  const std::int64_t jitter = static_cast<std::int64_t>(below(5)) - 2;
+  const std::int64_t price = config_.min_price + static_cast<std::int64_t>(offset) + jitter;
+  return std::clamp<Price>(price, config_.min_price, config_.max_price);
+}
+
+Price OpGenerator::drain_refill_price(Side side) {
+  // Join the modelled best level so the add/cancel pair targets the top of the
+  // book. Those prices were themselves drawn from the boundary clusters, and
+  // when the side is empty the fallback boundary price becomes the best level.
+  if (side == Side::Buy && !bid_levels_.empty()) {
+    return bid_levels_.begin()->first;
+  }
+  if (side == Side::Sell && !ask_levels_.empty()) {
+    return ask_levels_.begin()->first;
+  }
+  return ladder_boundary_price(ladder_offset_);
 }
 
 Qty OpGenerator::choose_invalid_qty() {

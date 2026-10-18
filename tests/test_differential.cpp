@@ -31,11 +31,12 @@ using lob::Config;
 using lob::OrderBook;
 using lob::opgen::DiffResult;
 using lob::opgen::OpGenerator;
+using lob::opgen::OpMix;
 using lob::opgen::run_differential;
 using lob::ref::ReferenceBook;
 
-void expect_match(const Config& config, std::uint64_t seed, std::uint64_t ops) {
-  OpGenerator generator(seed, config);
+void expect_match(const Config& config, std::uint64_t seed, std::uint64_t ops, OpMix mix = {}) {
+  OpGenerator generator(seed, config, mix);
   const DiffResult result = run_differential<OrderBook, ReferenceBook>(config, generator, ops);
 
   ASSERT_EQ(result.mismatches, 0U)
@@ -66,6 +67,17 @@ TEST(FastVsReference, NarrowPriceRangeMatchesReference) {
   // matching happens in a very crowded ladder.
   constexpr Config config{150, 152, 128, 8};
   expect_match(config, 20261021, kSanitized ? 20000 : 200000);
+}
+
+TEST(FastVsReference, LadderStressMatchesReference) {
+  // The ladder-stress mix clusters prices at the occupancy bitmap boundaries
+  // (offsets 0, 63, 64, 65, 4095, 4096, 4097 and the top), sweeps a whole
+  // side empty with market orders and drains/refills the best level. The
+  // 1..20000 range spans five 64-bit summary words of the array ladder's
+  // occupancy bitmap, and the build's ladder (tree or array) is the one under
+  // test.
+  constexpr Config config{1, 20000, 4096, 64};
+  expect_match(config, 20261022, kSanitized ? 20000 : 200000, lob::opgen::ladder_stress_mix());
 }
 
 }  // namespace

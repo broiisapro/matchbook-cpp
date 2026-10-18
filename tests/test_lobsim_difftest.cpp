@@ -48,7 +48,18 @@ TEST(LobsimDifftest, ReferenceAgainstReferenceReportsZeroMismatches) {
   EXPECT_TRUE(contains(result.out, "wall_ms: "));
   EXPECT_TRUE(contains(result.out, "engine-a: reference"));
   EXPECT_TRUE(contains(result.out, "engine-b: reference"));
+  EXPECT_TRUE(contains(result.out, "mix: default"));
   EXPECT_TRUE(contains(result.err, "progress: 100000 ops"));
+}
+
+TEST(LobsimDifftest, LadderStressMixIsAcceptedAndReported) {
+  const RunResult result =
+      run_tool({"difftest", "--ops", "2000", "--seed", "3", "--engine-a", "reference", "--engine-b",
+                "reference", "--mix", "ladder_stress"});
+
+  ASSERT_EQ(result.code, 0) << result.err;
+  EXPECT_TRUE(contains(result.out, "mix: ladder_stress"));
+  EXPECT_TRUE(contains(result.out, "mismatches: 0"));
 }
 
 TEST(LobsimDifftest, ConfigOverridesAreAccepted) {
@@ -81,6 +92,7 @@ TEST(LobsimDifftest, UsageErrorsExitWithTwo) {
       {"difftest", "--ops", "10"},
       {"difftest", "--ops", "10", "--seed", "1", "--engine-a", "quantum"},
       {"difftest", "--ops", "10", "--seed", "1", "--engine-b", "quantum"},
+      {"difftest", "--ops", "10", "--seed", "1", "--mix", "quantum"},
       {"difftest", "--ops", "10", "--seed", "1", "--bogus"},
       {"difftest", "--ops", "10", "--seed", "1", "--min-price", "0"},
       {"difftest", "--ops", "10", "--seed", "1", "--max-orders", "0"},
