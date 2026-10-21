@@ -1,0 +1,87 @@
+# Shared build-environment setup for both runner kinds (decision C39).
+#
+# On the self-hosted runner every install step is a no-op: the tools, uv and
+# the vcpkg clone are already present, and the vcpkg cache step is skipped
+# because the runner keeps its own binary archives under
+# ~/.cache/vcpkg/archives. On a GitHub-hosted runner every job starts with a
+# clean workspace, so the same steps install what the image lacks, restore the
+# binary cache and bootstrap vcpkg.
+name: Set up the build environment
+description: Install missing tools, ensure uv, restore the vcpkg cache and bootstrap vcpkg.
+
+inputs:
+  bootstrap-vcpkg:
+    description: Restore the vcpkg binary cache and bootstrap vcpkg.
+    required: false
+    default: "true"
+  install-llvm:
+    description: Install Homebrew LLVM (advisory clang-tidy job only).
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Install missing Homebrew tools
+      shell: bash
+      env:
+        HOMEBREW_NO_AUTO_UPDATE: "1"
+      run: |
+        set -euo pipefail
+        missing=()
+        for tool in cmake ninja pkg-config; do
+          command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+        done
+        if [[ "${{ inputs.install-llvm }}" == "true" ]] && ! brew list --versions llvm >/dev/null 2>&1; then
+          missing+=("llvm")
+        fi
+        if (( ${#missing[@]} == 0 )); then
+          echo "every required Homebrew tool is already installed"
+          exit 0
+        fi
+        echo "installing: ${missing[*]}"
+        brew install "${missing[@]}"
+
+    - name: Ensure uv
+      id: uv
+      shell: bash
+      run: |
+        if command -v uv >/dev/null 2>&1; then
+          echo "present=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "present=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Set up uv
+      if: steps.uv.outputs.present != 'true'
+      uses: astral-sh/setup-uv@v10
+
+    - name: Set VCPKG_ROOT
+      shell: bash
+      run: echo "VCPKG_ROOT=$HOME/.cache/matchbook/vcpkg" >> "$GITHUB_ENV"
+
+    # vcpkg.json, the pinned baseline and the compiler decide which port
+    # binaries are reusable, so they form the cache key.
+    - name: Fingerprint the toolchain
+      id: fingerprint
+      if: inputs.bootstrap-vcpkg == 'true'
+      shell: bash
+      run: |
+        baseline="$(sed -n 's/.*"builtin-baseline"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' vcpkg.json)"
+        clang="$(clang --version | head -n 1 | tr -cs 'A-Za-z0-9._-' '-')"
+        echo "baseline=$baseline" >> "$GITHUB_OUTPUT"
+        echo "clang=$clang" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the vcpkg binary cache
+      if: inputs.bootstrap-vcpkg == 'true' && runner.environment == 'github-hosted'
+      uses: actions/cache@v6
+      with:
+        path: ~/.cache/vcpkg/archives
+        key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vcpkg.json') }}-${{ steps.fingerprint.outputs.baseline }}-${{ steps.fingerprint.outputs.clang }}
+        restore-keys: |
+          vcpkg-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: Bootstrap vcpkg
+      if: inputs.bootstrap-vcpkg == 'true'
+      shell: bash
+      run: ./scripts/bootstrap_vcpkg.sh
