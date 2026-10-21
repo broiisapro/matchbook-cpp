@@ -54,7 +54,9 @@ runs:
 
     - name: Set up uv
       if: steps.uv.outputs.present != 'true'
-      uses: astral-sh/setup-uv@v10
+      # setup-uv stopped publishing a moving major tag after v7, so this is the
+      # exact current release rather than a major alias.
+      uses: astral-sh/setup-uv@v10.3.0
 
     - name: Set VCPKG_ROOT
       shell: bash
