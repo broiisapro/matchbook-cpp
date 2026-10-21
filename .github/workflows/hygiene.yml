@@ -15,9 +15,13 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 45
     steps:
+      # clean: false leaves the runner's build/ directory in place. This job
+      # only reads tracked files, and the build and test jobs share the same
+      # workspace, so a clean checkout here would force a full rebuild.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          clean: false
       - name: Check PR text, commit messages and commit identity
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
