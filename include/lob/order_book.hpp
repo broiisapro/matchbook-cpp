@@ -29,8 +29,6 @@ struct LevelInfo {
 /// Every state change is reported to the Listener in the exact order defined
 /// by the event contract; both this engine and the reference engine emit the
 /// same sequence. Callbacks must not call back into the book.
-///
-/// The implementation lands in Epic 1; this wave ships the frozen API.
 class OrderBook {
  public:
   OrderBook(const Config& config, Listener& listener);
