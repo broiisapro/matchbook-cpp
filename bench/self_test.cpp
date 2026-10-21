@@ -1,12 +1,14 @@
 #include "bench/self_test.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cinttypes>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <iterator>
 #include <string>
+#include <vector>
 
 #include "bench/latency.hpp"
 #include "bench/timer.hpp"
@@ -28,78 +30,238 @@ void spin(std::uint64_t iterations) {
   g_black_hole = state;
 }
 
-/// Number of `spin` iterations whose measured cost is closest to target_ns.
-/// A long probe gives the starting guess; short refinement passes then measure
-/// the actual loop and scale it, which absorbs frequency and branch predictor
-/// state differences between the probe and the timed loop. The refinement uses
-/// the ~5th percentile of 41 samples: preemption on a busy machine only ever
-/// inflates a measurement, so a low percentile recovers the true loop cost
-/// where a median can collapse the iteration count. When even that percentile
-/// lands below the timer's step (a loop shorter than 41.7 ns on the M5 cannot
-/// be timed at all) the loop is multiplied instead of scaled, so the estimate
-/// climbs out of the unmeasurable range instead of collapsing to one
-/// iteration.
-std::uint64_t iterations_for_ns(double target_ns) {
-  constexpr std::uint64_t kProbeIterations = 1'000'000;
-  constexpr std::uint64_t kMaxIterations = std::uint64_t{1} << 20U;
-  constexpr int kRefinementSamples = 41;
-  constexpr int kRefinementPick = 2;  // ~5th percentile
-  const double min_measurable_ns = 2.0 * timer_granularity().step_ns;
-  spin(kProbeIterations);  // warm up
-  const Ticks probe_begin = now_ticks();
-  spin(kProbeIterations);
-  const Ticks probe_end = now_ticks();
-  const double per_iteration_ns =
-      ticks_to_ns(probe_end - probe_begin) / static_cast<double>(kProbeIterations);
+/// Preemption only ever adds time to a measurement, so the minimum over
+/// several trials is the cleanest estimate of how long a piece of code takes
+/// when it is actually running. Nine trials (an odd number, so the median is a
+/// real sample) give an outlier-resistant minimum and a median for the log.
+constexpr int kCalibrationTrials = 9;
 
-  auto iterations = static_cast<std::uint64_t>(std::llround(target_ns / per_iteration_ns));
-  if (iterations == 0) {
-    iterations = 1;
+/// Each calibration trial times enough back-to-back calls that the window is
+/// thousands of timer steps long: 200 us against a 41.7 ns step makes read
+/// quantization and timer overhead irrelevant.
+constexpr double kCalibrationWindowNs = 200'000.0;
+
+/// A calibrated delay is only used when its minimum long-window cost is
+/// within this fraction of the target. The self-test's own p50 band is wider
+/// (+-25 %), so a calibration that passes here leaves room for the natural
+/// scatter of the recorded samples.
+constexpr double kCalibrationTolerance = 0.10;
+
+/// The refinement stops once a pass is this close to the target; scaling
+/// further would chase the last few percent of measurement noise.
+constexpr int kMaxCalibrationPasses = 8;
+
+/// Minimum and maximum calls per calibration window, so very small and very
+/// large targets still produce a measurable window.
+constexpr std::uint64_t kMinWindowCalls = 32;
+constexpr std::uint64_t kMaxWindowCalls = 65'536;
+
+/// Minimum, median and maximum of the per-call cost over
+/// `kCalibrationTrials` long windows.
+struct WindowStats {
+  double min_ns = 0.0;
+  double median_ns = 0.0;
+  double max_ns = 0.0;
+};
+
+/// Calls per window for a target delay: enough that one window spans
+/// `kCalibrationWindowNs`, clamped so tiny targets stay cheap and huge ones
+/// do not run for milliseconds per call.
+std::uint64_t window_calls_for(double target_ns) {
+  if (!(target_ns > 0.0)) {
+    return kMinWindowCalls;
   }
-  for (int pass = 0; pass < 8; ++pass) {
-    Ticks samples[kRefinementSamples];
-    for (Ticks& sample : samples) {
-      const Ticks begin = now_ticks();
+  const auto calls = static_cast<std::uint64_t>(std::llround(kCalibrationWindowNs / target_ns));
+  return std::clamp<std::uint64_t>(calls, kMinWindowCalls, kMaxWindowCalls);
+}
+
+/// Times `calls` back-to-back `spin(iterations)` calls `kCalibrationTrials`
+/// times and reduces each window to a per-call cost.
+WindowStats measure_windows(std::uint64_t iterations, std::uint64_t calls) {
+  std::array<double, kCalibrationTrials> samples{};
+  for (double& sample : samples) {
+    const Ticks begin = now_ticks();
+    for (std::uint64_t call = 0; call < calls; ++call) {
       spin(iterations);
-      sample = now_ticks() - begin;
     }
-    std::sort(std::begin(samples), std::end(samples));
-    const double measured_ns = ticks_to_ns(samples[kRefinementPick]);
-    if (measured_ns < min_measurable_ns) {
-      iterations = std::min<std::uint64_t>(iterations * 4, kMaxIterations);
-      continue;
-    }
-    const auto adjusted = static_cast<std::uint64_t>(
-        std::llround(static_cast<double>(iterations) * target_ns / measured_ns));
-    if (adjusted == iterations || adjusted == 0) {
+    const Ticks end = now_ticks();
+    sample = ticks_to_ns(end - begin) / static_cast<double>(calls);
+  }
+  std::sort(samples.begin(), samples.end());
+  return WindowStats{samples.front(), samples[kCalibrationTrials / 2], samples.back()};
+}
+
+/// Cost of one `spin` iteration, as the minimum over `kCalibrationTrials`
+/// long probe runs. A quarter-million iterations is a few hundred
+/// microseconds per trial: long enough that read quantization is negligible,
+/// short enough that the whole probe stays a couple of milliseconds.
+WindowStats probe_iteration_ns() {
+  constexpr std::uint64_t kProbeIterations = 250'000;
+  spin(kProbeIterations);  // warm up the loop and the branch predictor
+  std::array<double, kCalibrationTrials> samples{};
+  for (double& sample : samples) {
+    const Ticks begin = now_ticks();
+    spin(kProbeIterations);
+    const Ticks end = now_ticks();
+    sample = ticks_to_ns(end - begin) / static_cast<double>(kProbeIterations);
+  }
+  std::sort(samples.begin(), samples.end());
+  return WindowStats{samples.front(), samples[kCalibrationTrials / 2], samples.back()};
+}
+
+/// A calibrated busy-wait: how many `spin` iterations approximate `target_ns`,
+/// plus the evidence that the raw counter agreed with the target before the
+/// delay was handed to the recorder.
+struct SpinCalibration {
+  std::uint64_t iterations = 0;
+  std::uint64_t calls = 0;
+  WindowStats probe;   ///< per-iteration cost, min/median/max over the probe trials
+  WindowStats verify;  ///< per-call cost, min/median/max over the long verification windows
+  int passes = 0;
+  bool verified = false;
+
+  double error_fraction(double target_ns) const {
+    return target_ns > 0.0 ? (verify.min_ns - target_ns) / target_ns : 0.0;
+  }
+};
+
+/// Calibrates a `spin` delay to `target_ns` and verifies it against the raw
+/// counter over long windows. The probe supplies the starting iteration count;
+/// each refinement pass then measures the delay actually produced and scales
+/// the count, so a probe taken on a slow core (or a boosted one) cannot leave
+/// the delay far from the target. Every trial minimum is taken over
+/// `kCalibrationTrials` windows, and the final `verify` always belongs to the
+/// iteration count that is returned.
+SpinCalibration calibrate_spin(double target_ns) {
+  SpinCalibration result;
+  result.calls = window_calls_for(target_ns);
+  result.probe = probe_iteration_ns();
+  if (!(target_ns > 0.0) || !(result.probe.min_ns > 0.0)) {
+    return result;  // verified stays false; the caller reports the numbers
+  }
+
+  result.iterations = std::max<std::uint64_t>(
+      1, static_cast<std::uint64_t>(std::llround(target_ns / result.probe.min_ns)));
+  for (int pass = 0; pass < kMaxCalibrationPasses; ++pass) {
+    result.verify = measure_windows(result.iterations, result.calls);
+    result.passes = pass + 1;
+    if (!(result.verify.min_ns > 0.0)) {
       break;
     }
-    iterations = adjusted;
+    if (std::abs(result.verify.min_ns - target_ns) <= kCalibrationTolerance * target_ns) {
+      break;  // already inside the band; scaling further only chases noise
+    }
+    const auto adjusted = static_cast<std::uint64_t>(
+        std::llround(static_cast<double>(result.iterations) * target_ns / result.verify.min_ns));
+    const auto clamped = std::clamp<std::uint64_t>(adjusted, 1, std::uint64_t{1} << 24U);
+    if (clamped == result.iterations) {
+      break;
+    }
+    result.iterations = clamped;
   }
-  return iterations;
+
+  // Always verify the exact iteration count that is returned, even when the
+  // last refinement pass changed it.
+  result.verify = measure_windows(result.iterations, result.calls);
+  result.verified = result.verify.min_ns > 0.0 &&
+                    std::abs(result.verify.min_ns - target_ns) <= kCalibrationTolerance * target_ns;
+  return result;
 }
 
 /// Runs a calibrated ~target_ns delay through the recorder with `request`
 /// forced (auto resolves against the measured granularity) and checks that the
-/// reported p50 lands within +-25 % of the target.
+/// reported p50 lands within +-25 % of the target. Each attempt re-calibrates
+/// immediately before the measurement, verifies the delay against the raw
+/// counter over long windows both before and after recording, and retries on a
+/// fresh calibration when the machine's apparent speed changed underneath the
+/// measurement. A failure therefore reports a delay that the raw counter
+/// agrees with, not a stale calibration.
 bool check_delay(double target_ns, LatencyModeRequest request, const char* what) {
   constexpr double kTolerance = 0.25;
   constexpr std::size_t kSamples = 2001;
-  set_latency_mode_request(request);
-  const std::uint64_t iterations = iterations_for_ns(target_ns);
-  LatencyRecorder recorder(target_ns);  // the synthetic delay is calibrated by construction
-  for (std::size_t sample = 0; sample < kSamples; ++sample) {
-    recorder.record_op([iterations] { spin(iterations); });
-  }
-  const Percentiles p = recorder.percentiles();
+  constexpr int kMaxAttempts = 3;
   const double low = target_ns * (1.0 - kTolerance);
   const double high = target_ns * (1.0 + kTolerance);
-  const bool ok = static_cast<double>(p.p50_ns) >= low && static_cast<double>(p.p50_ns) <= high;
-  std::printf("self-test: %s mode %s: target ~%.0f ns -> p50 %" PRIu64 " ns, p99 %" PRIu64
-              " ns, max %" PRIu64 " ns (tolerance %.0f..%.0f ns) [%s]\n",
-              what, recorder.label().c_str(), target_ns, p.p50_ns, p.p99_ns, p.max_ns, low, high,
-              ok ? "ok" : "FAILED");
-  return ok;
+
+  SpinCalibration calibration;
+  Percentiles p;
+  std::string mode_label = request.label();
+  WindowStats after;
+  bool measured = false;
+  for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
+    set_latency_mode_request(request);
+    calibration = calibrate_spin(target_ns);  // immediately before this measurement
+    if (!calibration.verified) {
+      std::printf(
+          "self-test: %s target ~%.0f ns attempt %d/%d: calibrated delay did not verify "
+          "(probe min %.3f ns/iteration, median %.3f; %" PRIu64 " iterations x %" PRIu64
+          " calls; long-window min %.1f ns, median %.1f ns; tolerance +-%.0f%%)\n",
+          what, target_ns, attempt, kMaxAttempts, calibration.probe.min_ns,
+          calibration.probe.median_ns, calibration.iterations, calibration.calls,
+          calibration.verify.min_ns, calibration.verify.median_ns, kCalibrationTolerance * 100.0);
+      continue;
+    }
+
+    LatencyRecorder recorder(target_ns);
+    mode_label = recorder.label();
+    for (std::size_t sample = 0; sample < kSamples; ++sample) {
+      recorder.record_op([iterations = calibration.iterations] { spin(iterations); });
+    }
+    p = recorder.percentiles();
+    after = measure_windows(calibration.iterations, calibration.calls);
+    measured = true;
+
+    const bool p50_ok =
+        static_cast<double>(p.p50_ns) >= low && static_cast<double>(p.p50_ns) <= high;
+    const bool after_ok = std::abs(after.min_ns - target_ns) <= kCalibrationTolerance * target_ns;
+    std::printf(
+        "self-test: %s mode %s attempt %d/%d: target ~%.0f ns -> p50 %" PRIu64 " ns, p99 %" PRIu64
+        " ns, max %" PRIu64
+        " ns (tolerance %.0f..%.0f ns); calibration probe min %.3f ns/iteration (median %.3f), "
+        "%" PRIu64 " iterations x %" PRIu64
+        " calls after %d pass%s; verify min %.1f / median %.1f / max %.1f ns; "
+        "post-check min %.1f ns [%s]\n",
+        what, mode_label.c_str(), attempt, kMaxAttempts, target_ns, p.p50_ns, p.p99_ns, p.max_ns,
+        low, high, calibration.probe.min_ns, calibration.probe.median_ns, calibration.iterations,
+        calibration.calls, calibration.passes, calibration.passes == 1 ? "" : "es",
+        calibration.verify.min_ns, calibration.verify.median_ns, calibration.verify.max_ns,
+        after.min_ns, (p50_ok && after_ok) ? "ok" : "retrying");
+
+    if (p50_ok && after_ok) {
+      return true;
+    }
+    if (attempt < kMaxAttempts) {
+      std::printf(
+          "self-test: %s target ~%.0f ns did not land in tolerance; re-calibrating and "
+          "retrying (measurement environment changed under load)\n",
+          what, target_ns);
+    }
+  }
+
+  if (!measured) {
+    std::fprintf(stderr,
+                 "self-test FAILURE: %s mode %s, target ~%.0f ns: no calibrated delay passed the "
+                 "raw-counter check in %d attempts (probe min %.3f ns/iteration, median %.3f; "
+                 "last calibration %" PRIu64 " iterations x %" PRIu64
+                 " calls, verify min %.1f / median %.1f ns, error %+.1f%%, tolerance +-%.0f%%)\n",
+                 what, mode_label.c_str(), target_ns, kMaxAttempts, calibration.probe.min_ns,
+                 calibration.probe.median_ns, calibration.iterations, calibration.calls,
+                 calibration.verify.min_ns, calibration.verify.median_ns,
+                 calibration.error_fraction(target_ns) * 100.0, kCalibrationTolerance * 100.0);
+    return false;
+  }
+  std::fprintf(stderr,
+               "self-test FAILURE: %s mode %s, target ~%.0f ns -> p50 %" PRIu64
+               " ns outside %.0f..%.0f ns; calibration probe min %.3f ns/iteration (median "
+               "%.3f), %" PRIu64 " iterations x %" PRIu64
+               " calls after %d pass%s, verify min %.1f / median %.1f / max %.1f ns, post-check "
+               "min %.1f ns, calibration error %+.1f%% (tolerance +-%.0f%%)\n",
+               what, mode_label.c_str(), target_ns, p.p50_ns, low, high, calibration.probe.min_ns,
+               calibration.probe.median_ns, calibration.iterations, calibration.calls,
+               calibration.passes, calibration.passes == 1 ? "" : "es", calibration.verify.min_ns,
+               calibration.verify.median_ns, calibration.verify.max_ns, after.min_ns,
+               calibration.error_fraction(target_ns) * 100.0, kCalibrationTolerance * 100.0);
+  return false;
 }
 
 /// In auto mode the recorder must pick per-op only when the measured
@@ -165,25 +327,35 @@ int run_self_test() {
               overhead.ns);
 
   bool ok = true;
-  ok = check_auto_mode(granularity) && ok;
-  ok = check_parsing() && ok;
+  std::vector<std::string> failures;
+  const auto check = [&ok, &failures](bool passed, const std::string& name) {
+    ok = passed && ok;
+    if (!passed) {
+      failures.push_back(name);
+    }
+  };
+  check(check_auto_mode(granularity), "auto mode selection");
+  check(check_parsing(), "--latency-mode parsing");
   // Auto mode on the measured granularity, then each forced mode. The
   // per-op check uses a delay well above the timer step so quantization cannot
   // move the p50 outside the tolerance band; the batch check uses a delay far
   // below it to prove that batching resolves sub-step operations.
-  ok = check_delay(200.0, LatencyModeRequest{}, "auto") && ok;
-  ok = check_delay(2000.0, LatencyModeRequest{}, "auto") && ok;
-  ok = check_delay(2000.0, LatencyModeRequest{LatencyModeRequestKind::PerOp, 1}, "forced per-op") &&
-       ok;
-  ok =
-      check_delay(200.0, LatencyModeRequest{LatencyModeRequestKind::Batch, 64}, "forced batch64") &&
-      ok;
+  check(check_delay(200.0, LatencyModeRequest{}, "auto"), "auto mode, 200 ns target");
+  check(check_delay(2000.0, LatencyModeRequest{}, "auto"), "auto mode, 2000 ns target");
+  check(check_delay(2000.0, LatencyModeRequest{LatencyModeRequestKind::PerOp, 1}, "forced per-op"),
+        "forced per-op, 2000 ns target");
+  check(check_delay(200.0, LatencyModeRequest{LatencyModeRequestKind::Batch, 64}, "forced batch64"),
+        "forced batch64, 200 ns target");
 
   set_latency_mode_request(saved_request);
   reset_latency_mode_decision();
   if (!ok) {
+    std::fprintf(stderr, "self-test FAILED: %zu check(s) did not pass:", failures.size());
+    for (const std::string& failure : failures) {
+      std::fprintf(stderr, " [%s]", failure.c_str());
+    }
     std::fprintf(stderr,
-                 "self-test FAILED: reported percentiles do not match the synthetic delays; "
+                 "\nself-test FAILED: reported percentiles do not match the synthetic delays; "
                  "do not trust measurements from this machine right now\n");
     return 1;
   }
