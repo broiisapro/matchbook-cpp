@@ -86,4 +86,13 @@ runs:
     - name: Bootstrap vcpkg
       if: inputs.bootstrap-vcpkg == 'true'
       shell: bash
-      run: ./scripts/bootstrap_vcpkg.sh
+      run: |
+        # A long-lived self-hosted workspace can hold a full clone at ./vcpkg
+        # from the earlier workflow, where VCPKG_ROOT only reached later steps.
+        # The script refuses to replace such a clone with the VCPKG_ROOT
+        # symlink, so keep using it there; hosted runners start without it.
+        if [[ -e vcpkg && ! -L vcpkg ]]; then
+          env -u VCPKG_ROOT ./scripts/bootstrap_vcpkg.sh
+        else
+          ./scripts/bootstrap_vcpkg.sh
+        fi
