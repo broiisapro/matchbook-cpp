@@ -1,7 +1,8 @@
 # CI runs on one self-hosted runner whose environment forces single-threaded,
-# low-priority work. Every checkout here keeps the persistent workspace
-# (`clean: false`), so builds stay incremental and `test` reuses the release
-# tree from `build` instead of rebuilding it.
+# low-priority work (decision C30). The runner label list comes from the
+# CI_RUNS_ON repository variable, so switching to GitHub-hosted macOS runners
+# at public ship is a variable change rather than a workflow change (decision
+# C39).
 name: ci
 
 on:
@@ -18,18 +19,17 @@ concurrency:
 jobs:
   build:
     name: build
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["self-hosted","macOS","ARM64"]') }}
     timeout-minutes: 45
     steps:
-      # clean: false keeps the persistent workspace, so build/release is
-      # incremental across jobs and pushes.
+      # clean: false keeps the persistent workspace on the self-hosted runner,
+      # so build/release is incremental across jobs and pushes. Hosted runners
+      # start every job with a fresh workspace, where the same setting is a
+      # harmless no-op.
       - uses: actions/checkout@v7
         with:
           clean: false
-      - name: Bootstrap vcpkg
-        run: |
-          echo "VCPKG_ROOT=$HOME/.cache/matchbook/vcpkg" >> "$GITHUB_ENV"
-          ./scripts/bootstrap_vcpkg.sh
+      - uses: ./.github/actions/setup
       - name: Configure (release)
         run: cmake --preset release
       - name: Build (release)
@@ -38,18 +38,17 @@ jobs:
   test:
     name: test
     needs: build
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["self-hosted","macOS","ARM64"]') }}
     timeout-minutes: 45
     steps:
       # Same runner and workspace as `build`: the release build is reused, and
-      # only the configure step re-runs (cheap when nothing changed).
+      # only the configure step re-runs (cheap when nothing changed). On a
+      # hosted runner this job has its own fresh workspace and rebuilds; that
+      # is slower but still correct.
       - uses: actions/checkout@v7
         with:
           clean: false
-      - name: Bootstrap vcpkg
-        run: |
-          echo "VCPKG_ROOT=$HOME/.cache/matchbook/vcpkg" >> "$GITHUB_ENV"
-          ./scripts/bootstrap_vcpkg.sh
+      - uses: ./.github/actions/setup
       - name: Configure (release)
         run: cmake --preset release
       - name: Build (release)
@@ -59,16 +58,13 @@ jobs:
 
   asan:
     name: asan
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["self-hosted","macOS","ARM64"]') }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
         with:
           clean: false
-      - name: Bootstrap vcpkg
-        run: |
-          echo "VCPKG_ROOT=$HOME/.cache/matchbook/vcpkg" >> "$GITHUB_ENV"
-          ./scripts/bootstrap_vcpkg.sh
+      - uses: ./.github/actions/setup
       - name: Configure (asan)
         run: cmake --preset asan
       - name: Build (asan)
@@ -78,7 +74,7 @@ jobs:
 
   format:
     name: format
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["self-hosted","macOS","ARM64"]') }}
     timeout-minutes: 45
     steps:
       # Formatting only reads tracked files; keeping the workspace means this
@@ -86,6 +82,11 @@ jobs:
       - uses: actions/checkout@v7
         with:
           clean: false
+      - uses: ./.github/actions/setup
+        with:
+          # The formatter comes from uv; this job does not build anything, so
+          # it does not need vcpkg.
+          bootstrap-vcpkg: "false"
       - name: Print pinned formatter version
         run: uvx clang-format==23.1.3 --version
       - name: Check formatting
@@ -99,16 +100,16 @@ jobs:
     # Advisory and expensive: only a manual dispatch runs it.
     if: github.event_name == 'workflow_dispatch'
     continue-on-error: true
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["self-hosted","macOS","ARM64"]') }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
         with:
           clean: false
-      - name: Bootstrap vcpkg
-        run: |
-          echo "VCPKG_ROOT=$HOME/.cache/matchbook/vcpkg" >> "$GITHUB_ENV"
-          ./scripts/bootstrap_vcpkg.sh
+      - uses: ./.github/actions/setup
+        with:
+          # This is the only job that needs Homebrew LLVM.
+          install-llvm: "true"
       - name: Configure (release)
         run: cmake --preset release
       - name: Run clang-tidy (advisory)
