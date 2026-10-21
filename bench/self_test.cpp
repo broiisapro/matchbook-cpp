@@ -47,8 +47,9 @@ constexpr double kCalibrationWindowNs = 200'000.0;
 /// scatter of the recorded samples.
 constexpr double kCalibrationTolerance = 0.10;
 
-/// The refinement stops once a pass is this close to the target; scaling
-/// further would chase the last few percent of measurement noise.
+/// Upper bound on refinement passes. Each pass measures the delay the current
+/// iteration count actually produces and rescales it; a handful of passes is
+/// ample when the probe was taken on a different core.
 constexpr int kMaxCalibrationPasses = 8;
 
 /// Minimum and maximum calls per calibration window, so very small and very
