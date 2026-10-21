@@ -26,7 +26,8 @@
       "inherits": "base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG"
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "LOB_PRICE_LADDER": "array"
       }
     },
     {
@@ -34,7 +35,8 @@
       "displayName": "Debug",
       "inherits": "base",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "LOB_PRICE_LADDER": "array"
       }
     },
     {
@@ -61,7 +63,8 @@
         "CMAKE_BUILD_TYPE": "",
         "CMAKE_CXX_FLAGS": "-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer",
         "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
-        "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=address,undefined"
+        "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=address,undefined",
+        "LOB_PRICE_LADDER": "array"
       }
     },
     {
@@ -72,7 +75,8 @@
         "CMAKE_BUILD_TYPE": "",
         "CMAKE_CXX_FLAGS": "-O1 -g -fsanitize=thread",
         "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread",
-        "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=thread"
+        "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=thread",
+        "LOB_PRICE_LADDER": "array"
       }
     }
   ],
