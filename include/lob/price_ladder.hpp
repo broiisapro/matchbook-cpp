@@ -34,9 +34,9 @@ struct PriceOrder {
 /// fixed-capacity node allocator, plus the per-side level limit.
 ///
 /// find() and find_or_insert() are the operations the matching code uses;
-/// iteration is always best -> worst. The class hides the map so a future
-/// implementation (an array-indexed price ladder) can replace it behind the
-/// same interface without touching callers.
+/// iteration is always best -> worst. The class hides the map so the
+/// array-indexed ladder can replace it behind the same interface without
+/// touching callers.
 class PriceLadder {
  public:
   using Map = std::map<Price, Level, PriceOrder, PoolAllocator<std::pair<const Price, Level>>>;
