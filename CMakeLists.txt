@@ -36,6 +36,7 @@ elseif(LOB_PRICE_LADDER STREQUAL "array")
 else()
   message(FATAL_ERROR "LOB_PRICE_LADDER must be 'tree' or 'array', got '${LOB_PRICE_LADDER}'")
 endif()
+message(STATUS "lob: price ladder = ${LOB_PRICE_LADDER}")
 
 # Naive reference engine (test-only). It shares no code with `lob` beyond the
 # frozen headers, so it gets the include paths directly and does not link the
