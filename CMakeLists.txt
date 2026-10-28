@@ -16,8 +16,9 @@ find_package(hdr_histogram CONFIG REQUIRED)
 find_package(xxHash CONFIG REQUIRED)
 find_package(ZLIB REQUIRED)
 
-# Fast engine. The implementation lands in Epic 1; the target, includes and
-# dependency wiring are frozen here.
+# Fast engine: the matching engine and its private data structures. Every
+# .cpp under src/ is picked up automatically, so new engine sources never
+# require an edit here.
 file(GLOB LOB_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 add_library(lob STATIC ${LOB_SOURCES})
 target_include_directories(lob PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
