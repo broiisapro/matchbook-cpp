@@ -6,6 +6,8 @@ matchbook-cpp is a limit order book and matching engine in modern C++ built the 
 
 The author's background is mechatronics — memory layout, fixed-point arithmetic and deterministic timing on embedded systems — which is the same set of instincts low-latency C++ rewards.
 
+`docs/architecture.md` fixes the event contract and the on-disk formats; the phase write-ups in `docs/epic-00-foundation.md`, `docs/epic-01-engines.md`, `docs/epic-02-array-ladder.md` and `docs/epic-03-ship-v1.md` explain how each part was built and measured.
+
 ## Benchmarks
 
 Apple M5 (arm64, 32 GB), macOS 27.0.1, Apple clang 21.0.0 (clang-2100.3.34.2), `-O3 -DNDEBUG`, array price ladder, `batch128` latency mode, 10 repetitions per benchmark, 2026-10-28, commit `aed8e66`; 1-minute load average 1.55 before the run and 2.20 after it. Latency in nanoseconds, median run:
@@ -59,6 +61,7 @@ The array ladder wins on the matching-heavy rows: crossing and market orders get
 - **Event contract.** `docs/architecture.md` §4 fixes the six callbacks and their exact order for every operation: accept, reject, trade at the resting price, cancel, in-place reduce, book update. Both engines are written against that text, and a listener must not call back into the book.
 - **Reference engine.** `lob::ref::ReferenceBook` is a deliberately naive `std::map` + `std::list` implementation with an `std::unordered_map` id index. It shares only the frozen `types.hpp`, `config.hpp`, `listener.hpp` and `digest.hpp` headers with the fast engine and is never optimized.
 - **Differential test.** `lobsim difftest` runs a seeded operation stream through both engines with recording listeners; after every operation the event vectors and the XXH64 book digests must be identical. The suite runs 1,000,000 random operations plus five stress configurations: tight order capacity (200,000 operations), tight level capacity (200,000), a three-price range (200,000), a wide 1–200,000-tick config at 300,000 operations (books hundreds of levels deep), and a ladder-stress mix (200,000) that clusters prices on the occupancy bitmap boundaries, sweeps a side empty and drains and refills the best level. Operation counts scale down under sanitizers. `./build/release/lobsim difftest --ops 1000000 --seed 42` ends with `mismatches: 0`, and the nightly runs five fresh seeds per ladder at 2,000,000 operations (narrow) and 200,000 (wide).
+- **Fresh-clone audits.** Each epic close is re-checked from a fresh clone of `main` outside the test suite: bootstrap vcpkg, build every preset, run the full suite, and repeat the differential runs by hand. The audits ran 10,000,000-operation `lobsim difftest` streams on both ladders, on fixed seed 7 and on a fresh seed, plus a wide-config run (200,000 operations, 665 levels deep) and the 2,000,000-operation ladder-stress mix; every run ended with `mismatches: 0`. Reproduce any of them with `./build/release/lobsim difftest --ops 10000000 --seed 7`, adding `--config wide` or `--mix ladder_stress`. The nightly workflow (`.github/workflows/nightly.yml`) keeps a rolling version: five seeds per run, both the `release` and `release-tree` presets, 2,000,000 narrow and 200,000 wide operations each.
 - **Allocation test.** `test_alloc` replaces every global `operator new`/`delete` form and counts allocations only around the measured loop. A positive control allocates through all eight `operator new` forms while armed and requires all eight to be counted; the hot-path test then performs 1,000,000 operations after warm-up and requires zero. It skips under ASan/TSan, where the sanitizer interceptors make exact counts unreliable.
 - **Determinism.** `scripts/check_determinism.sh` generates one flow, replays it in the debug and release builds with both engines and requires the digests to agree within and across builds.
 - **Tardis-derived flow.** `tests/data/tardis_sample.csv.gz` is the first hour of Binance ETHBTC `incremental_book_L2` for 2026-10-01 (18,774 rows), converted to a flow file with exact integer decimal parsing. The conversion builds synthetic per-level queues from L2 deltas and cancels crossed levels before they can trade, so replay is trade-free; the reference engine's final digest is pinned as `0xea3b4198b591dd6d`.
@@ -96,6 +99,8 @@ Prerequisites on macOS:
 xcode-select --install
 brew install cmake ninja pkg-config uv
 ```
+
+`cmake` and `ninja` drive the build, `pkg-config` is required by vcpkg's pkg-config fix-up for the `hdr-histogram` port, and `uv` runs the report scripts. The C++ dependencies themselves come from vcpkg, not Homebrew.
 
 Clone, build and run the test suite:
 
