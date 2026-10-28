@@ -1,14 +1,14 @@
-// The golden stream hash below was produced once by running the generator with
-// the pinned seed and config through the byte serializer in this file; the
-// byte layout is one operation after another as:
+// The golden stream hash below was produced once by dumping the generator's
+// operation stream in the byte layout below to a file and hashing that file
+// with xxh64sum (XXH64, seed 0), outside this test binary:
 //   kind u8, id u64 LE, side u8, type u8, price i64 LE, qty i64 LE
-// hashed with XXH64 (seed 0). The golden is a regression pin: changing the
-// generator on purpose means regenerating this constant.
+// The golden is a regression pin: changing the generator on purpose means
+// regenerating this constant.
 //
-// Regenerated for the Phase 2 order-type mix (issue #90): the operation stream
-// was written to a file by a throwaway program that implements the layout
-// above, then hashed with the Python `xxhash` binding (XXH64, seed 0), outside
-// this test binary.
+// Regenerated for issue #111: the default mix no longer emits FOK/PostOnly
+// (decision C53), so the type draws that used to consume RNG state are gone.
+// The all-types mixes turn the two types back on through all_types_mix() and
+// are covered by hash-free structural tests below.
 
 #include <gtest/gtest.h>
 
@@ -24,7 +24,10 @@
 #include <xxhash.h>
 
 #include "lob/config.hpp"
+#include "lob/listener.hpp"
 #include "lob/types.hpp"
+#include "reference/reference_book.hpp"
+#include "tools/opgen/differential.hpp"
 #include "tools/opgen/opgen.hpp"
 
 namespace {
@@ -32,6 +35,8 @@ namespace {
 using lob::Config;
 using lob::OrderType;
 using lob::Side;
+using lob::opgen::all_types_mix;
+using lob::opgen::apply_op;
 using lob::opgen::ladder_stress_mix;
 using lob::opgen::Op;
 using lob::opgen::OpGenerator;
@@ -40,11 +45,11 @@ using lob::opgen::OpMix;
 
 constexpr std::uint64_t kGoldenSeed = 12345;
 constexpr Config kGoldenConfig{100, 200, 20000, 500};
-constexpr std::uint64_t kGoldenHash = 0xa0215bec375085e8ULL;
+constexpr std::uint64_t kGoldenHash = 0x2984d944967473fdULL;
 
 constexpr std::uint64_t kLadderStressSeed = 424242;
 constexpr Config kLadderStressConfig{1, 20000, 4096, 64};
-constexpr std::uint64_t kLadderStressHash = 0x4f03adaadaaca3abULL;
+constexpr std::uint64_t kLadderStressHash = 0x0ad375a4508e1b14ULL;
 
 std::vector<std::byte> serialize(const std::vector<Op>& ops) {
   std::vector<std::byte> bytes;
@@ -99,7 +104,7 @@ TEST(OpGenerator, DifferentSeedsDiffer) {
 
 TEST(OpGenerator, EveryKindAndSubmitTypeAppearsIn100kOps) {
   constexpr Config config{1, 1000, 100000, 1000};
-  const std::vector<Op> ops = generate(7, config, 100000);
+  const std::vector<Op> ops = generate(7, config, 100000, all_types_mix());
   ASSERT_EQ(ops.size(), 100000U);
 
   std::size_t submits = 0;
@@ -152,12 +157,29 @@ TEST(OpGenerator, EveryKindAndSubmitTypeAppearsIn100kOps) {
   EXPECT_GT(post_onlys, 0U);
 }
 
-// The Phase 2 types are rejected as unsupported until the matching semantics
-// land (decision C47), so the generator emits them at a small, bounded weight:
-// enough for the differential test to cover the reject path in every preset,
-// far below the types that actually trade. The sequential chances in the
-// generator make the share a few percent at most.
-TEST(OpGenerator, EmitsPhaseTwoTypesAtASmallWeight) {
+// Decision C53: the default mixes stay Limit/Market/IOC so CI never compares
+// a FOK-implementing engine with a FOK-rejecting one. The phase 2 types are
+// opt-in through all_types_mix() (`lobsim difftest --types all`).
+TEST(OpGenerator, DefaultMixesEmitNoPhaseTwoTypes) {
+  constexpr Config config{1, 1000, 100000, 1000};
+  const std::vector<std::vector<Op>> streams = {
+      generate(kGoldenSeed, config, 100000),
+      generate(kGoldenSeed, config, 100000, lob::opgen::wide_mix()),
+      generate(kGoldenSeed, config, 100000, ladder_stress_mix()),
+  };
+
+  for (const std::vector<Op>& ops : streams) {
+    for (const Op& op : ops) {
+      ASSERT_NE(op.type, OrderType::FOK) << op;
+      ASSERT_NE(op.type, OrderType::PostOnly) << op;
+    }
+  }
+}
+
+// all_types_mix() adds FOK and PostOnly at about 5 % of submits each; the
+// bounds are wide enough for seed variation but still pin the documented
+// weight and keep the types far below Limit/Market/IOC.
+TEST(OpGenerator, AllTypesMixesEmitPhaseTwoTypesAtAboutFivePercent) {
   struct Counts {
     std::size_t submits = 0;
     std::size_t foks = 0;
@@ -180,25 +202,54 @@ TEST(OpGenerator, EmitsPhaseTwoTypesAtASmallWeight) {
     return counts;
   };
 
-  const Counts defaults = count(generate(kGoldenSeed, kGoldenConfig, 100000));
-  const Counts wide = count(generate(kGoldenSeed, kGoldenConfig, 100000, lob::opgen::wide_mix()));
+  const Counts defaults = count(generate(kGoldenSeed, kGoldenConfig, 100000, all_types_mix()));
+  const Counts wide =
+      count(generate(kGoldenSeed, kGoldenConfig, 100000, all_types_mix(lob::opgen::wide_mix())));
   const Counts ladder =
-      count(generate(kGoldenSeed, kLadderStressConfig, 100000, ladder_stress_mix()));
+      count(generate(kGoldenSeed, kLadderStressConfig, 100000, all_types_mix(ladder_stress_mix())));
 
   for (const Counts& counts : {defaults, wide, ladder}) {
     ASSERT_GT(counts.submits, 0U);
-    EXPECT_GT(counts.foks, 0U);
-    EXPECT_GT(counts.post_onlys, 0U);
-    // At most 5% of each, and at most 10% of both together.
-    EXPECT_LT(counts.foks * 20, counts.submits);
-    EXPECT_LT(counts.post_onlys * 20, counts.submits);
-    EXPECT_LT((counts.foks + counts.post_onlys) * 10, counts.submits);
+    // Between 3 % and 7 % each.
+    EXPECT_GT(counts.foks * 100, counts.submits * 3);
+    EXPECT_LT(counts.foks * 100, counts.submits * 7);
+    EXPECT_GT(counts.post_onlys * 100, counts.submits * 3);
+    EXPECT_LT(counts.post_onlys * 100, counts.submits * 7);
   }
 }
 
-// A FOK or PostOnly order never rests, so the generator's own book view must
-// not grow from one. With unknown-id picks disabled, a cancel can only fall
-// back to a synthetic unknown id when the model holds no live order at all.
+// An all-types run must reach the WouldCross path as well as the resting path:
+// some PostOnly orders are priced through the opposite best level. The check
+// uses the reference engine's book, which is the state the generator priced
+// against.
+TEST(OpGenerator, AllTypesIncludePostOnlyOrdersThatWouldCross) {
+  constexpr Config config{100, 300, 20000, 500};
+  lob::NullListener listener;
+  lob::ref::ReferenceBook book(config, listener);
+
+  OpGenerator generator(kGoldenSeed, config, all_types_mix());
+  std::size_t post_onlys = 0;
+  std::size_t crossing = 0;
+  for (int i = 0; i < 20000; ++i) {
+    const Op op = generator.next();
+    if (op.kind == OpKind::Submit && op.type == OrderType::PostOnly) {
+      ++post_onlys;
+      const auto best = op.side == Side::Buy ? book.best_ask() : book.best_bid();
+      if (best && (op.side == Side::Buy ? *best <= op.price : *best >= op.price)) {
+        ++crossing;
+      }
+    }
+    apply_op(book, op);
+  }
+
+  EXPECT_GT(post_onlys, 0U);
+  EXPECT_GT(crossing, 0U);
+}
+
+// The generator's model only tracks orders it expects to rest, and it treats
+// FOK and PostOnly as non-resting: the model is a targeting heuristic, not a
+// second engine. With unknown-id picks disabled, a cancel can only fall back
+// to a synthetic unknown id when the model holds no live order at all.
 TEST(OpGenerator, PhaseTwoSubmitsDoNotEnterTheModelledBook) {
   OpMix mix;
   mix.submit_weight = 1;
@@ -206,7 +257,7 @@ TEST(OpGenerator, PhaseTwoSubmitsDoNotEnterTheModelledBook) {
   mix.modify_weight = 0;
   mix.market_weight = 0;
   mix.ioc_weight = 0;
-  mix.fok_weight = 100;  // every submit is an unsupported type
+  mix.fok_weight = 100;  // every submit is a FOK
   mix.duplicate_id_weight = 0;
   mix.reuse_id_weight = 0;
   mix.unknown_id_weight = 0;

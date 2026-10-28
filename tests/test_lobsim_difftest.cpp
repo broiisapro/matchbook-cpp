@@ -95,6 +95,31 @@ TEST(LobsimDifftest, LadderStressMixIsAcceptedAndReported) {
   EXPECT_TRUE(contains(result.out, "mismatches: 0"));
 }
 
+TEST(LobsimDifftest, TypesDefaultToBasicAndAllAddsPhaseTwoTypes) {
+  const RunResult basic = run_tool({"difftest", "--ops", "2000", "--seed", "4", "--engine-a",
+                                    "reference", "--engine-b", "reference"});
+  ASSERT_EQ(basic.code, 0) << basic.err;
+  EXPECT_TRUE(contains(basic.out, "types: basic"));
+
+  const RunResult all = run_tool({"difftest", "--ops", "20000", "--seed", "4", "--engine-a",
+                                  "reference", "--engine-b", "reference", "--types", "all"});
+  ASSERT_EQ(all.code, 0) << all.err;
+  EXPECT_TRUE(contains(all.out, "types: all"));
+  EXPECT_TRUE(contains(all.out, "mismatches: 0"));
+}
+
+// --types composes with an explicit --mix instead of replacing it.
+TEST(LobsimDifftest, AllTypesComposesWithAnExplicitMix) {
+  const RunResult result =
+      run_tool({"difftest", "--ops", "5000", "--seed", "8", "--engine-a", "reference", "--engine-b",
+                "reference", "--mix", "wide", "--types", "all"});
+
+  ASSERT_EQ(result.code, 0) << result.err;
+  EXPECT_TRUE(contains(result.out, "mix: wide"));
+  EXPECT_TRUE(contains(result.out, "types: all"));
+  EXPECT_TRUE(contains(result.out, "mismatches: 0"));
+}
+
 TEST(LobsimDifftest, ConfigOverridesAreAccepted) {
   const RunResult result =
       run_tool({"difftest", "--ops", "1000", "--seed", "9", "--engine-a", "reference", "--engine-b",
@@ -115,6 +140,10 @@ TEST(LobsimDifftest, HelpExitsZeroAndPrintsUsage) {
 
   EXPECT_EQ(result.code, 0);
   EXPECT_TRUE(contains(result.out, "usage: lobsim difftest"));
+  // The order-type switch is part of the help (wave-05 carryover).
+  EXPECT_TRUE(contains(result.out, "--types"));
+  EXPECT_TRUE(contains(result.out, "basic"));
+  EXPECT_TRUE(contains(result.out, "all"));
 }
 
 TEST(LobsimDifftest, UsageErrorsExitWithTwo) {
@@ -126,6 +155,7 @@ TEST(LobsimDifftest, UsageErrorsExitWithTwo) {
       {"difftest", "--ops", "10", "--seed", "1", "--engine-a", "quantum"},
       {"difftest", "--ops", "10", "--seed", "1", "--engine-b", "quantum"},
       {"difftest", "--ops", "10", "--seed", "1", "--mix", "quantum"},
+      {"difftest", "--ops", "10", "--seed", "1", "--types", "quantum"},
       {"difftest", "--ops", "10", "--seed", "1", "--config", "quantum"},
       {"difftest", "--ops", "10", "--seed", "1", "--bogus"},
       {"difftest", "--ops", "10", "--seed", "1", "--min-price", "0"},
