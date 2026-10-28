@@ -25,11 +25,11 @@ namespace lob::ref {
 
 /// Naive reference implementation of the book, mirroring the OrderBook public
 /// API exactly so the differential harness can be a template over the engine
-/// type. It is deliberately simple and never optimized; the implementation
-/// lands in Epic 1 (WS B). It shares no engine code with lob::OrderBook.
+/// type. It is deliberately simple and is never optimized. It shares no
+/// engine code with lob::OrderBook.
 ///
-/// The event sequences are identical to OrderBook: see include/lob/order_book.hpp
-/// for the contract summary per method.
+/// The event sequences are identical to OrderBook: see section 4 of
+/// docs/architecture.md for the contract per method.
 class ReferenceBook {
  public:
   ReferenceBook(const Config& config, Listener& listener);

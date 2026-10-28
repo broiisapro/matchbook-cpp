@@ -4,6 +4,11 @@
 //   kind u8, id u64 LE, side u8, type u8, price i64 LE, qty i64 LE
 // hashed with XXH64 (seed 0). The golden is a regression pin: changing the
 // generator on purpose means regenerating this constant.
+//
+// Regenerated for the Phase 2 order-type mix (issue #90): the operation stream
+// was written to a file by a throwaway program that implements the layout
+// above, then hashed with the Python `xxhash` binding (XXH64, seed 0), outside
+// this test binary.
 
 #include <gtest/gtest.h>
 
@@ -35,11 +40,11 @@ using lob::opgen::OpMix;
 
 constexpr std::uint64_t kGoldenSeed = 12345;
 constexpr Config kGoldenConfig{100, 200, 20000, 500};
-constexpr std::uint64_t kGoldenHash = 0x2984d944967473fdULL;
+constexpr std::uint64_t kGoldenHash = 0xa0215bec375085e8ULL;
 
 constexpr std::uint64_t kLadderStressSeed = 424242;
 constexpr Config kLadderStressConfig{1, 20000, 4096, 64};
-constexpr std::uint64_t kLadderStressHash = 0x0ad375a4508e1b14ULL;
+constexpr std::uint64_t kLadderStressHash = 0x4f03adaadaaca3abULL;
 
 std::vector<std::byte> serialize(const std::vector<Op>& ops) {
   std::vector<std::byte> bytes;
@@ -103,6 +108,8 @@ TEST(OpGenerator, EveryKindAndSubmitTypeAppearsIn100kOps) {
   std::size_t limits = 0;
   std::size_t markets = 0;
   std::size_t iocs = 0;
+  std::size_t foks = 0;
+  std::size_t post_onlys = 0;
 
   for (const Op& op : ops) {
     switch (op.kind) {
@@ -117,6 +124,12 @@ TEST(OpGenerator, EveryKindAndSubmitTypeAppearsIn100kOps) {
             break;
           case OrderType::IOC:
             ++iocs;
+            break;
+          case OrderType::FOK:
+            ++foks;
+            break;
+          case OrderType::PostOnly:
+            ++post_onlys;
             break;
         }
         break;
@@ -135,6 +148,86 @@ TEST(OpGenerator, EveryKindAndSubmitTypeAppearsIn100kOps) {
   EXPECT_GT(limits, 0U);
   EXPECT_GT(markets, 0U);
   EXPECT_GT(iocs, 0U);
+  EXPECT_GT(foks, 0U);
+  EXPECT_GT(post_onlys, 0U);
+}
+
+// The Phase 2 types are rejected as unsupported until the matching semantics
+// land (decision C47), so the generator emits them at a small, bounded weight:
+// enough for the differential test to cover the reject path in every preset,
+// far below the types that actually trade. The sequential chances in the
+// generator make the share a few percent at most.
+TEST(OpGenerator, EmitsPhaseTwoTypesAtASmallWeight) {
+  struct Counts {
+    std::size_t submits = 0;
+    std::size_t foks = 0;
+    std::size_t post_onlys = 0;
+  };
+
+  const auto count = [](const std::vector<Op>& ops) {
+    Counts counts;
+    for (const Op& op : ops) {
+      if (op.kind != OpKind::Submit) {
+        continue;
+      }
+      ++counts.submits;
+      if (op.type == OrderType::FOK) {
+        ++counts.foks;
+      } else if (op.type == OrderType::PostOnly) {
+        ++counts.post_onlys;
+      }
+    }
+    return counts;
+  };
+
+  const Counts defaults = count(generate(kGoldenSeed, kGoldenConfig, 100000));
+  const Counts wide = count(generate(kGoldenSeed, kGoldenConfig, 100000, lob::opgen::wide_mix()));
+  const Counts ladder =
+      count(generate(kGoldenSeed, kLadderStressConfig, 100000, ladder_stress_mix()));
+
+  for (const Counts& counts : {defaults, wide, ladder}) {
+    ASSERT_GT(counts.submits, 0U);
+    EXPECT_GT(counts.foks, 0U);
+    EXPECT_GT(counts.post_onlys, 0U);
+    // At most 5% of each, and at most 10% of both together.
+    EXPECT_LT(counts.foks * 20, counts.submits);
+    EXPECT_LT(counts.post_onlys * 20, counts.submits);
+    EXPECT_LT((counts.foks + counts.post_onlys) * 10, counts.submits);
+  }
+}
+
+// A FOK or PostOnly order never rests, so the generator's own book view must
+// not grow from one. With unknown-id picks disabled, a cancel can only fall
+// back to a synthetic unknown id when the model holds no live order at all.
+TEST(OpGenerator, PhaseTwoSubmitsDoNotEnterTheModelledBook) {
+  OpMix mix;
+  mix.submit_weight = 1;
+  mix.cancel_weight = 1;
+  mix.modify_weight = 0;
+  mix.market_weight = 0;
+  mix.ioc_weight = 0;
+  mix.fok_weight = 100;  // every submit is an unsupported type
+  mix.duplicate_id_weight = 0;
+  mix.reuse_id_weight = 0;
+  mix.unknown_id_weight = 0;
+  mix.invalid_qty_weight = 0;
+
+  OpGenerator generator(kGoldenSeed, kGoldenConfig, mix);
+  std::size_t submits = 0;
+  std::size_t cancels = 0;
+  for (int i = 0; i < 40; ++i) {
+    const Op op = generator.next();
+    if (op.kind == OpKind::Submit) {
+      EXPECT_EQ(op.type, OrderType::FOK);
+      ++submits;
+      continue;
+    }
+    ASSERT_EQ(op.kind, OpKind::Cancel);
+    ++cancels;
+    EXPECT_GE(op.id, 1ULL << 63);
+  }
+  EXPECT_GT(submits, 0U);
+  EXPECT_GT(cancels, 0U);
 }
 
 TEST(OpGenerator, PricesStayWithinTwoTicksOfTheConfiguredRange) {

@@ -323,6 +323,10 @@ const char* type_name(OrderType type) {
       return "Market";
     case OrderType::IOC:
       return "IOC";
+    case OrderType::FOK:
+      return "FOK";
+    case OrderType::PostOnly:
+      return "PostOnly";
   }
   return "Limit";
 }

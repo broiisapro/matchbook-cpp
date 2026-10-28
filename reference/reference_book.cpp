@@ -26,6 +26,13 @@ ReferenceBook::ReferenceBook(const Config& config, Listener& listener)
 void ReferenceBook::submit(OrderId id, Side side, OrderType type, Price price, Qty qty) {
   assert(!in_callback_);
 
+  // Validation step 0 (decision C47): FOK and PostOnly are part of the frozen
+  // contract but not implemented yet, so both engines reject them before any
+  // other check.
+  if (type == OrderType::FOK || type == OrderType::PostOnly) {
+    notify_reject(id, RejectReason::UnsupportedOrderType);
+    return;
+  }
   if (qty <= 0) {
     notify_reject(id, RejectReason::InvalidQuantity);
     return;

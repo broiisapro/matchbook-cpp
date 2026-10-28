@@ -213,6 +213,10 @@ Op OpGenerator::next_submit() {
     type = OrderType::Market;
   } else if (chance(mix_.ioc_weight)) {
     type = OrderType::IOC;
+  } else if (chance(mix_.fok_weight)) {
+    type = OrderType::FOK;
+  } else if (chance(mix_.post_only_weight)) {
+    type = OrderType::PostOnly;
   }
 
   OrderId id = 0;
