@@ -64,11 +64,15 @@ struct OpMix {
   // Submit shape (percent).
   std::uint32_t market_weight = 6;
   std::uint32_t ioc_weight = 10;
-  // Phase 2 order types. Both engines reject them until the matching semantics
-  // land (decision C47), so the generator emits them only to keep the reject
-  // path in the differential test; every preset keeps these small.
-  std::uint32_t fok_weight = 2;
-  std::uint32_t post_only_weight = 2;
+  // Phase 2 order types. Zero in every default preset: CI must never compare a
+  // FOK-implementing engine against a FOK-rejecting one (decision C53), so the
+  // types only appear through all_types_mix() / `--types all`.
+  std::uint32_t fok_weight = 0;
+  std::uint32_t post_only_weight = 0;
+  // Share (percent) of PostOnly submits deliberately priced through the
+  // opposite best level, so an all-types run covers the WouldCross reject path
+  // as well as the rest path. Ignored when post_only_weight is zero.
+  std::uint32_t post_only_cross_weight = 0;
   std::uint32_t crossing_weight = 20;
   std::uint32_t edge_price_weight = 12;
   std::uint32_t invalid_qty_weight = 4;
@@ -101,15 +105,27 @@ OpMix ladder_stress_mix();
 /// hundreds of price levels deep when the capacity allows.
 OpMix wide_mix();
 
+/// Turns the Phase 2 order types on for an all-types run: about 5 % of submits
+/// become FOK and about 5 % PostOnly, and half of the PostOnly orders are
+/// deliberately priced through the opposite best level so both the WouldCross
+/// reject and the resting path are exercised. Everything else in `mix` is
+/// preserved, so it composes with each preset (`all_types_mix(wide_mix())`).
+/// The default mixes leave both weights at zero (decision C53).
+OpMix all_types_mix(OpMix mix = {});
+
 /// Deterministic operation stream. The generator keeps its own view of the
 /// orders it has submitted (as submitted, not as filled) so cancels and
 /// modifies usually target ids that are still live in the engine: the head and
 /// tail of the queue at the best modelled level, or a random live id. It also
 /// produces unknown ids, duplicate live ids, ids reused after a cancel,
 /// crossing orders, prices at the configured edges and just outside, invalid
-/// quantities, market/IOC orders against possibly empty sides, and a small
-/// share of FOK and PostOnly orders (rejected as unsupported until Phase 2). A
-/// mid price random walk keeps the modelled book deep.
+/// quantities, market/IOC orders against possibly empty sides, and (only when
+/// the mix enables them, i.e. all_types_mix) FOK and PostOnly orders. A mid
+/// price random walk keeps the modelled book deep.
+///
+/// FOK and PostOnly submits never enter the modelled book: the model is a
+/// heuristic for aiming cancels and modifies at live ids, and treating the
+/// phase 2 types as non-resting keeps it simple and honest.
 ///
 /// Randomness is std::mt19937_64 only; every distribution is implemented in
 /// this file with integer arithmetic. No std::*_distribution is used, so the
@@ -155,6 +171,9 @@ class OpGenerator {
   Op next_drain_refill_step();
 
   Price choose_submit_price(Side side);
+  /// The opposite side's best modelled price when it exists, else `fallback`.
+  /// Used to price a PostOnly order deliberately through the book.
+  Price crossing_price(Side side, Price fallback);
   Price choose_move_price(Price old_price);
   Price choose_edge_price();
   /// Price at boundary `index` of the ladder's occupancy bitmaps, relative to

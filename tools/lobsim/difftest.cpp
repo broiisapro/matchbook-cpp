@@ -32,6 +32,7 @@ using lob::OrderType;
 using lob::Price;
 using lob::Qty;
 using lob::Side;
+using lob::opgen::all_types_mix;
 using lob::opgen::apply_op;
 using lob::opgen::DiffResult;
 using lob::opgen::ladder_stress_mix;
@@ -48,6 +49,11 @@ enum class EngineKind { Fast, Reference };
 /// Named configuration presets: the small narrow default and the flow tools'
 /// wide replay config.
 enum class ConfigKind { Narrow, Wide };
+
+/// Which submit types the generator may emit. `All` turns on FOK and PostOnly
+/// (decision C53); the default keeps them out so CI never compares engines
+/// that disagree on the Phase 2 semantics.
+enum class TypeKind { Basic, All };
 
 /// Default differential config. It is deliberately much smaller than the
 /// flow-tool default replay config: a max_orders of 512 and a max_levels of 16
@@ -86,6 +92,10 @@ constexpr std::string_view kUsage =
     "                       ladder_stress clusters prices at the ladder bitmap\n"
     "                       boundaries, sweeps a side empty and drains/refills\n"
     "                       the best level\n"
+    "  --types T            basic | all (default basic); all adds FOK and\n"
+    "                       PostOnly submits at about 5% each, including\n"
+    "                       PostOnly orders priced through the book so the\n"
+    "                       WouldCross reject path is exercised too\n"
     "  --min-price P        override the config minimum price\n"
     "  --max-price P        override the config maximum price\n"
     "  --max-orders N       override the config maximum live orders\n"
@@ -104,6 +114,7 @@ struct DiffOptions {
   Config config = default_diff_config();
   OpMix mix{};
   bool have_mix = false;
+  TypeKind types = TypeKind::Basic;
   bool progress = false;
   bool help = false;
 };
@@ -152,6 +163,18 @@ bool parse_config(std::string_view text, ConfigKind& out) {
   }
   if (text == "wide") {
     out = ConfigKind::Wide;
+    return true;
+  }
+  return false;
+}
+
+bool parse_types(std::string_view text, TypeKind& out) {
+  if (text == "basic") {
+    out = TypeKind::Basic;
+    return true;
+  }
+  if (text == "all") {
+    out = TypeKind::All;
     return true;
   }
   return false;
@@ -224,6 +247,12 @@ bool parse_args(int argc, char** argv, DiffOptions& options) {
         return false;
       }
       options.have_mix = true;
+    } else if (flag == "--types") {
+      if (!parse_types(value, options.types)) {
+        std::fprintf(stderr, "difftest: --types must be basic or all, got '%s'\n",
+                     std::string(value).c_str());
+        return false;
+      }
     } else if (flag == "--min-price") {
       if (!parse_integer(value, min_price.emplace())) {
         std::fprintf(stderr, "difftest: --min-price needs an integer, got '%s'\n",
@@ -282,6 +311,9 @@ bool parse_args(int argc, char** argv, DiffOptions& options) {
   if (!options.have_mix) {
     options.mix = options.config_kind == ConfigKind::Wide ? wide_mix() : OpMix{};
   }
+  if (options.types == TypeKind::All) {
+    options.mix = all_types_mix(options.mix);
+  }
 
   if (!lob::valid(options.config)) {
     std::fputs(
@@ -300,6 +332,8 @@ const char* engine_name(EngineKind engine) {
 const char* config_name(ConfigKind config) {
   return config == ConfigKind::Wide ? "wide" : "narrow";
 }
+
+const char* types_name(TypeKind types) { return types == TypeKind::All ? "all" : "basic"; }
 
 const char* kind_name(OpKind kind) {
   switch (kind) {
@@ -453,6 +487,7 @@ int run_selected(const DiffOptions& options) {
   std::printf("engine-b: %s\n", engine_name(options.engine_b));
   std::printf("config: %s\n", config_name(options.config_kind));
   std::printf("mix: %s\n", std::string(lob::opgen::to_string(options.mix.preset)).c_str());
+  std::printf("types: %s\n", types_name(options.types));
   std::printf("min-price: %lld\n", static_cast<long long>(options.config.min_price));
   std::printf("max-price: %lld\n", static_cast<long long>(options.config.max_price));
   std::printf("max-orders: %u\n", options.config.max_orders);

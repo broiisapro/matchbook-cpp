@@ -54,6 +54,15 @@ OpMix wide_mix() {
   return mix;
 }
 
+OpMix all_types_mix(OpMix mix) {
+  mix.fok_weight = 5;
+  mix.post_only_weight = 5;
+  // Half of the PostOnly orders aim through the opposite best level: the rest
+  // either join the book or get rejected with WouldCross.
+  mix.post_only_cross_weight = 50;
+  return mix;
+}
+
 OpMix ladder_stress_mix() {
   OpMix mix;
   mix.preset = OpMixPreset::LadderStress;
@@ -235,7 +244,10 @@ Op OpGenerator::next_submit() {
 
   const Qty qty =
       chance(mix_.invalid_qty_weight) ? choose_invalid_qty() : static_cast<Qty>(1 + below(100));
-  const Price price = type == OrderType::Market ? 0 : choose_submit_price(side);
+  Price price = type == OrderType::Market ? 0 : choose_submit_price(side);
+  if (type == OrderType::PostOnly && chance(mix_.post_only_cross_weight)) {
+    price = crossing_price(side, price);
+  }
 
   const bool would_validate = type == OrderType::Limit && !duplicate && qty > 0 &&
                               price >= config_.min_price && price <= config_.max_price;
@@ -327,6 +339,13 @@ Price OpGenerator::choose_submit_price(Side side) {
   const Price lo = std::max(mid_ - band, config_.min_price - 2);
   const Price hi = std::min(mid_ + band, config_.max_price + 2);
   return uniform_price(lo, hi);
+}
+
+Price OpGenerator::crossing_price(Side side, Price fallback) {
+  if (side == Side::Buy) {
+    return ask_levels_.empty() ? fallback : ask_levels_.begin()->first;
+  }
+  return bid_levels_.empty() ? fallback : bid_levels_.begin()->first;
 }
 
 Price OpGenerator::choose_move_price(Price old_price) {
