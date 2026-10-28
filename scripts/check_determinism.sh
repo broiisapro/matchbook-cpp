@@ -7,13 +7,11 @@
 #   1. configures and builds the debug and release presets;
 #   2. generates a synthetic flow (--orders, default 200000) with a fixed seed
 #      using the release lobsim;
-#   3. replays the flow with --digest for each build and each available engine.
-#      The reference engine is always available; the fast engine is considered
-#      available when a small probe flow yields accepts (a stub engine does not);
+#   3. replays the flow with --digest for each build and each engine;
 #   4. prints one table row per (engine, build) and checks two hard
 #      requirements: the debug and release digests match per engine, and the
 #      fast and reference engines produce the same digest within the same
-#      build. Either mismatch fails the script.
+#      build. Either mismatch fails the script; there is no skip path.
 #
 # Usage: scripts/check_determinism.sh [--orders N] [--seed S]
 # Exit status: 0 when every check passed, 1 otherwise.
@@ -77,14 +75,6 @@ DEBUG_BIN="$ROOT/build/debug/lobsim"
 echo "generating $ORDERS-order flow..."
 "$RELEASE_BIN" gen --orders "$ORDERS" --seed "$SEED" --out "$WORK/flow.bin"
 
-# A flow small enough to reason about: two non-crossing limit submits. A real
-# fast engine accepts both; the placeholder implementation accepts nothing.
-cat >"$WORK/probe.csv" <<'CSV'
-op,side,type,id,price,qty,ts_ns
-submit,buy,limit,1,100,5,1
-submit,sell,limit,2,101,5,2
-CSV
-
 summary_value() { # <summary file> <key>
   sed -n "s/^${2}: //p" "$1" | head -n 1
 }
@@ -92,13 +82,7 @@ summary_value() { # <summary file> <key>
 echo "engine     build     records    trades   final_orders  digest"
 echo "--------------------------------------------------------------"
 
-declare -a ENGINES=(reference)
-FAST_AVAILABLE=0
-"$RELEASE_BIN" replay "$WORK/probe.csv" --engine fast >"$WORK/probe_fast.out" 2>/dev/null || true
-if [[ "$(summary_value "$WORK/probe_fast.out" accepts)" == "2" ]]; then
-  FAST_AVAILABLE=1
-  ENGINES+=(fast)
-fi
+declare -a ENGINES=(reference fast)
 
 FAILED=0
 for engine in "${ENGINES[@]}"; do
@@ -126,18 +110,14 @@ for engine in "${ENGINES[@]}"; do
   fi
 done
 
-if [[ "$FAST_AVAILABLE" -eq 1 ]]; then
-  for preset in debug release; do
-    fast_digest="$(summary_value "$WORK/fast.$preset.out" digest)"
-    reference_digest="$(summary_value "$WORK/reference.$preset.out" digest)"
-    if [[ "$fast_digest" != "$reference_digest" ]]; then
-      echo "FAIL: digest differs between fast ($fast_digest) and reference ($reference_digest) in the $preset build"
-      FAILED=1
-    fi
-  done
-else
-  echo "note: fast engine did not accept the probe flow; skipped"
-fi
+for preset in debug release; do
+  fast_digest="$(summary_value "$WORK/fast.$preset.out" digest)"
+  reference_digest="$(summary_value "$WORK/reference.$preset.out" digest)"
+  if [[ "$fast_digest" != "$reference_digest" ]]; then
+    echo "FAIL: digest differs between fast ($fast_digest) and reference ($reference_digest) in the $preset build"
+    FAILED=1
+  fi
+done
 
 if [[ "$FAILED" -ne 0 ]]; then
   echo "determinism: FAIL"
