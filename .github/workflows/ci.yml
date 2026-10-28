@@ -134,6 +134,77 @@ jobs:
       - name: ccache statistics
         run: ccache --show-stats
 
+  docker:
+    name: docker
+    # Advisory, like `linux`: the image build exercises the whole Linux port
+    # end to end (it compiles the portable targets and runs their tests inside
+    # the image) but does not block a merge yet (decision C55).
+    #
+    # An image rebuild costs several minutes even with a warm layer cache, so a
+    # pull request only builds it when it touches a path the image is made of.
+    # Pushes to main always build, which is what makes "green on main" true.
+    continue-on-error: true
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - name: Match the changed paths
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" != "pull_request" ]]; then
+            echo "docker=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The checkout is the PR's merge commit; the base commit arrives with
+          # a one-commit fetch, so the diff names exactly the PR's files.
+          git fetch --no-tags --depth=1 origin "$BASE"
+          match=false
+          while IFS= read -r path; do
+            case "$path" in
+              docker/* | .dockerignore | src/* | include/* | net/* | apps/* | tools/* | \
+              reference/* | tests/* | CMakeLists.txt | vcpkg.json | \
+              .github/workflows/ci.yml | .github/actions/*)
+                echo "matched: $path"
+                match=true
+                break
+                ;;
+            esac
+          done < <(git diff --name-only "$BASE" HEAD)
+          echo "docker=$match" >> "$GITHUB_OUTPUT"
+      - name: Set up BuildKit
+        if: steps.filter.outputs.docker == 'true'
+        uses: docker/setup-buildx-action@v4
+      - name: Build the image
+        if: steps.filter.outputs.docker == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/arm64
+          tags: matchbook-cpp:ci
+          load: true
+          # The build stage compiles the engine and runs its test suite, so a
+          # warm layer cache turns the cost of a source change into a
+          # recompile instead of an apt install, a vcpkg clone and a port
+          # rebuild. mode=max exports the intermediate stages as well as the
+          # final image; the layers are large, which the cache's own eviction
+          # handles.
+          cache-from: type=gha,scope=matchbook-docker
+          cache-to: type=gha,mode=max,scope=matchbook-docker,ignore-error=true
+      - name: Run lobsim --help in the image
+        if: steps.filter.outputs.docker == 'true'
+        run: docker run --rm matchbook-cpp:ci --help
+      - name: Run a 100k-operation differential test in the image
+        if: steps.filter.outputs.docker == 'true'
+        run: |
+          output="$(docker run --rm matchbook-cpp:ci difftest --ops 100000 --seed 1)"
+          printf '%s\n' "$output"
+          printf '%s\n' "$output" | grep -qx 'mismatches: 0'
+
   format:
     name: format
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["self-hosted","macOS","ARM64"]') }}
