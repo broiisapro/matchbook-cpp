@@ -63,8 +63,9 @@ Callbacks are synchronous and must not call back into the book. Debug builds ass
 
 ### 4.1 `submit(OrderId id, Side side, OrderType type, Price price, Qty qty)`
 Validation, in this order, first failure wins, nothing else is emitted:
+0. `type` is `FOK` or `PostOnly` → `on_reject(id, UnsupportedOrderType)` while the Phase 2 semantics below are unimplemented (interim behaviour, decision C47; see §4.1.1–§4.1.2 for the final contract).
 1. `qty <= 0` → `on_reject(id, InvalidQuantity)`.
-2. Limit or IOC with `price < min_price || price > max_price` → `on_reject(id, InvalidPrice)`. Market orders ignore `price` (callers pass 0).
+2. Limit, IOC, FOK or PostOnly with `price < min_price || price > max_price` → `on_reject(id, InvalidPrice)`. Market orders ignore `price` (callers pass 0).
 3. `id` is a live resting order → `on_reject(id, DuplicateId)`. (Ids of filled or cancelled orders may be reused.)
 Capacity (`max_orders`, `max_levels`) is not a validation step; it only matters if a limit remainder must rest (step 6).
 
@@ -74,6 +75,27 @@ Then:
 6. Remainder > 0 (an order rests only if live orders < `max_orders` and, for a new price level, live levels < `max_levels`):
    - Limit: if capacity allows, rest at the back of its price level and emit `on_book_update(side, price, new level qty)`. If capacity does not allow, emit `on_cancel(id, remainder)` (the order was accepted and may have traded; the unrestable remainder is cancelled). Tested identically in both engines.
    - Market or IOC: `on_cancel(id, remainder)`.
+
+### 4.1.1 `FOK` — fill or kill (final semantics, implemented in Epic 06)
+
+**Interim (current):** rejected at validation step 0 with `UnsupportedOrderType`, in both engines, exactly as written in §4.1. Nothing else is emitted and the book is untouched.
+
+**Final:** a limit order that must fill completely and immediately against the resting book or not trade at all.
+1. Validation is the §4.1 sequence without step 0 (FOK is supported), with the FOK price bounds of step 2. Duplicate id, quantity and price rejects are unchanged.
+2. `on_accept(id)` is emitted before any trade.
+3. The kill check runs before the first trade is emitted: the available crossing quantity is the total quantity resting at opposite levels that the order crosses at its limit price (buy: every ask level `<= price`; sell: every bid level `>= price`). If that total is less than the submitted quantity, the order is killed: `on_accept(id)` is followed by `on_cancel(id, qty)` — the full submitted quantity, which never rested — and no `on_trade` or `on_book_update` is emitted. The book is unchanged.
+4. If the crossing quantity is enough, the fill is performed exactly as in §4.1 step 5, in price-time priority, until the full quantity is filled. The event sequence is then identical to an IOC of the same side, price and quantity that fully fills: `on_accept`, one `on_trade` plus `on_book_update` per maker touched, no `on_cancel`.
+5. A FOK order never rests and never hits the `max_orders` / `max_levels` capacity path: a fully filled FOK leaves nothing behind, and a killed FOK is cancelled as above.
+
+### 4.1.2 `PostOnly` — rest or reject (final semantics, implemented in Epic 06)
+
+**Interim (current):** rejected at validation step 0 with `UnsupportedOrderType`, in both engines, exactly as written in §4.1. `RejectReason::WouldCross` exists in the enum already so the final path needs no enum change.
+
+**Final:** a limit order that is only allowed to add liquidity.
+1. Validation is the §4.1 sequence without step 0 (PostOnly is supported), with the PostOnly price bounds of step 2. Duplicate id, quantity and price rejects are unchanged.
+2. If the order would cross on arrival — i.e. the opposite side's best price crosses the limit price at submit time (buy: `best_ask <= price`; sell: `best_bid >= price`) — it is rejected with `on_reject(id, WouldCross)`. Nothing else is emitted: no `on_accept`, no trade, no book update, and the id is not resting.
+3. Otherwise it rests exactly like a limit order: `on_accept(id)` and then §4.1 step 6 for the full quantity, including the capacity rule (if `max_orders` or `max_levels` forbids resting, `on_cancel(id, qty)`).
+4. The crossing check is against the book as it is when the operation is applied, not against a later state; an order that rests can of course be traded against by a later incoming order.
 
 ### 4.2 `cancel(OrderId id)`
 Unknown id → `on_reject(id, UnknownOrder)`. Otherwise remove it: `on_cancel(id, remaining qty)`, then `on_book_update(side, price, new level qty)`.
