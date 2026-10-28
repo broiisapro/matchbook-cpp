@@ -197,10 +197,10 @@ void apply(const Op& op, OrderBook& book) {
 
 /// Builds a seeded mixed stream. Each round builds a few resting orders on
 /// both sides and then exercises every operation kind against them: duplicate
-/// submits, in-place reduces, price moves, crossing limits, market and IOC
-/// orders, cancels of live and unknown ids, and modifies of unknown ids. The
-/// book is drained again by the crossing orders and cancels, so it never
-/// saturates on a long run.
+/// submits, in-place reduces, price moves, crossing limits, market, IOC, FOK
+/// and PostOnly orders, cancels of live and unknown ids, and modifies of
+/// unknown ids. The book is drained again by the crossing orders and cancels,
+/// so it never saturates on a long run.
 std::vector<Op> make_operations(std::uint64_t seed, std::size_t count) {
   Rng rng(seed);
   std::vector<Op> ops;
@@ -246,10 +246,23 @@ std::vector<Op> make_operations(std::uint64_t seed, std::size_t count) {
     ops.push_back(Op{Op::Kind::Submit, next_id++, Side::Buy, OrderType::IOC, 100000, quantity()});
     ops.push_back(Op{Op::Kind::Submit, next_id++, Side::Sell, OrderType::IOC, 1, quantity()});
 
+    // Phase 2 types: a kill check that walks the book (rest or reject), and
+    // two PostOnly orders that usually rest and are cancelled in this round so
+    // the book does not grow. None of these paths may allocate.
+    const OrderId post_bid = next_id++;
+    const OrderId post_ask = next_id++;
+    ops.push_back(Op{Op::Kind::Submit, post_bid, Side::Buy, OrderType::PostOnly, 2, quantity()});
+    ops.push_back(
+        Op{Op::Kind::Submit, post_ask, Side::Sell, OrderType::PostOnly, 99999, quantity()});
+    ops.push_back(Op{Op::Kind::Submit, next_id++, Side::Buy, OrderType::FOK, 100000, quantity()});
+    ops.push_back(Op{Op::Kind::Submit, next_id++, Side::Sell, OrderType::FOK, 1, quantity()});
+
     ops.push_back(Op{Op::Kind::Cancel, bid0, Side::Buy, OrderType::Limit, 0, 0});
     ops.push_back(Op{Op::Kind::Cancel, ask0, Side::Sell, OrderType::Limit, 0, 0});
     ops.push_back(Op{Op::Kind::Cancel, bid1, Side::Buy, OrderType::Limit, 0, 0});
     ops.push_back(Op{Op::Kind::Cancel, ask1, Side::Sell, OrderType::Limit, 0, 0});
+    ops.push_back(Op{Op::Kind::Cancel, post_bid, Side::Buy, OrderType::Limit, 0, 0});
+    ops.push_back(Op{Op::Kind::Cancel, post_ask, Side::Sell, OrderType::Limit, 0, 0});
     ops.push_back(Op{Op::Kind::Cancel, 1000000000ULL + taker, Side::Buy, OrderType::Limit, 0, 0});
     ops.push_back(
         Op{Op::Kind::Modify, 2000000000ULL + taker, Side::Buy, OrderType::Limit, bid_price0, 1});
