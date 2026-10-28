@@ -1,0 +1,113 @@
+# Build-environment setup for the arm64 Linux job (decision C55).
+#
+# The macOS action installs Homebrew packages and relies on a persistent
+# runner; this one installs the distribution toolchain with apt, which is what
+# the GitHub-hosted Ubuntu image expects. Everything after the install steps is
+# the same shape: uv, VCPKG_ROOT, the ccache and vcpkg binary caches, then the
+# pinned vcpkg checkout.
+name: Set up the Linux build environment
+description: Install the apt toolchain, ensure uv, restore the caches and bootstrap vcpkg.
+
+inputs:
+  bootstrap-vcpkg:
+    description: Restore the vcpkg binary cache and bootstrap vcpkg.
+    required: false
+    default: "true"
+  ccache:
+    description: Install ccache and point CCACHE_DIR at the cached directory.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Install missing apt packages
+      shell: bash
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        set -euo pipefail
+        # The hosted image ships most of this; the check keeps the action
+        # reusable on a plain arm64 Ubuntu VM where it ships none of it.
+        missing=()
+        declare -A package_of=(
+          [clang++]=clang [cmake]=cmake [ninja]=ninja-build [pkg-config]=pkg-config
+          [ccache]=ccache [make]=build-essential [git]=git [curl]=curl
+          [tar]=tar [zip]=zip [unzip]=unzip
+        )
+        for tool in "${!package_of[@]}"; do
+          command -v "$tool" >/dev/null 2>&1 || missing+=("${package_of[$tool]}")
+        done
+        if (( ${#missing[@]} == 0 )); then
+          echo "every required apt package is already installed"
+          exit 0
+        fi
+        echo "installing: ${missing[*]}"
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends "${missing[@]}"
+
+    - name: Ensure uv
+      id: uv
+      shell: bash
+      run: |
+        if command -v uv >/dev/null 2>&1; then
+          echo "present=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "present=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Set up uv
+      if: steps.uv.outputs.present != 'true'
+      uses: astral-sh/setup-uv@v10.3.0
+
+    - name: Set VCPKG_ROOT
+      shell: bash
+      run: echo "VCPKG_ROOT=$HOME/.cache/matchbook/vcpkg" >> "$GITHUB_ENV"
+
+    # vcpkg.json, the pinned baseline and the compiler decide which port
+    # binaries are reusable; the compiler version also decides which ccache
+    # entries are reusable, so one fingerprint step serves both caches.
+    - name: Fingerprint the toolchain
+      id: fingerprint
+      if: inputs.bootstrap-vcpkg == 'true' || inputs.ccache == 'true'
+      shell: bash
+      run: |
+        baseline="$(sed -n 's/.*"builtin-baseline"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' vcpkg.json)"
+        clang="$(clang++ --version | head -n 1 | tr -cs 'A-Za-z0-9._-' '-')"
+        echo "baseline=$baseline" >> "$GITHUB_OUTPUT"
+        echo "clang=$clang" >> "$GITHUB_OUTPUT"
+
+    - name: Configure ccache
+      if: inputs.ccache == 'true'
+      shell: bash
+      run: |
+        echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
+        echo "CCACHE_BASEDIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+        ccache --version | sed -n '1p'
+
+    - name: Restore the ccache cache
+      if: inputs.ccache == 'true'
+      uses: actions/cache@v6
+      with:
+        path: ~/.cache/ccache
+        # The job name keeps the two Linux jobs from racing to save the same
+        # key while still restoring whatever the newest cache for this
+        # compiler holds, so a PR's earlier pushes seed the next one.
+        key: ccache-${{ runner.os }}-${{ runner.arch }}-${{ steps.fingerprint.outputs.clang }}-${{ github.sha }}-${{ github.job }}
+        restore-keys: |
+          ccache-${{ runner.os }}-${{ runner.arch }}-${{ steps.fingerprint.outputs.clang }}-
+          ccache-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: Restore the vcpkg binary cache
+      if: inputs.bootstrap-vcpkg == 'true'
+      uses: actions/cache@v6
+      with:
+        path: ~/.cache/vcpkg/archives
+        key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('vcpkg.json') }}-${{ steps.fingerprint.outputs.baseline }}-${{ steps.fingerprint.outputs.clang }}
+        restore-keys: |
+          vcpkg-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: Bootstrap vcpkg
+      if: inputs.bootstrap-vcpkg == 'true'
+      shell: bash
+      run: ./scripts/bootstrap_vcpkg.sh

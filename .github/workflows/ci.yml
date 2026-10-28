@@ -1,8 +1,8 @@
-# CI runs on one self-hosted runner whose environment forces single-threaded,
-# low-priority work (decision C30). The runner label list comes from the
-# CI_RUNS_ON repository variable, so switching to GitHub-hosted macOS runners
-# at public ship is a variable change rather than a workflow change (decision
-# C39).
+# CI runs on GitHub-hosted runners. The macOS jobs take their label list from
+# the CI_RUNS_ON repository variable (decision C39); the Linux jobs run on the
+# hosted arm64 image directly. The macOS jobs restore ccache and the vcpkg
+# binary archives with actions/cache, because every hosted job starts from an
+# empty workspace.
 name: ci
 
 on:
@@ -57,6 +57,12 @@ jobs:
         run: cmake --build --preset release
       - name: Run tests (release)
         run: ctest --preset release
+      - name: Build the Python bindings
+        # scikit-build-core builds pylob in an isolated environment with
+        # pybind11 from PyPI; --frozen keeps CI on the committed lockfile.
+        run: uv sync --frozen
+      - name: Run the binding tests
+        run: uv run --frozen pytest -q python/pylob/tests
       - name: ccache statistics
         run: ccache --show-stats
 
@@ -93,6 +99,32 @@ jobs:
         run: cmake --build --preset tsan
       - name: Run tests (tsan)
         run: ctest --preset tsan --output-on-failure
+      - name: ccache statistics
+        run: ccache --show-stats
+
+  linux:
+    name: linux
+    # Advisory until it has been green on main (decision C55): the arm64 Linux
+    # port is checked on every push but does not block a merge while the port
+    # is still settling. Hosted arm64 Linux runners are free for public
+    # repositories.
+    continue-on-error: true
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-linux
+      - name: Configure (linux-release)
+        run: cmake --preset linux-release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      # The benchmark binary and the SPSC latency harness include the macOS
+      # timer in bench/timer.hpp; LOB_BUILD_BENCH=OFF in the preset drops the
+      # former, and naming the targets here drops the latter. Everything the
+      # test suite executes (the engine, the reference engine, the tools, the
+      # wire protocol and the two test binaries) is built.
+      - name: Build (linux-release)
+        run: cmake --build --preset linux-release --target lobsim lob_tests test_alloc
+      - name: Run tests (linux-release)
+        run: ctest --preset linux-release
       - name: ccache statistics
         run: ccache --show-stats
 
