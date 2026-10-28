@@ -8,13 +8,25 @@ The author's background is mechatronics — memory layout, fixed-point arithmeti
 
 ## Benchmarks
 
-<!-- BENCH-TABLE -->
+Apple M5 (arm64, 32 GB), macOS 27.0.1, Apple clang 21.0.0 (clang-2100.3.34.2), `-O3 -DNDEBUG`, array price ladder, `batch128` latency mode, 10 repetitions per benchmark, 2026-10-28, commit `aed8e66`; 1-minute load average 1.55 before the run and 2.20 after it. Latency in nanoseconds, median run:
 
-Numbers pending an idle-machine run; see Methodology.
+| Benchmark | p50 | p90 | p99 | p99.9 | max |
+| --- | --- | --- | --- | --- | --- |
+| Add order, non-crossing | 13 | 20 | 22 | 24 | 170 |
+| Add order, crossing 1 level | 8 | 9 | 9 | 10 | 167 |
+| Add order, crossing 2 levels | 14 | 15 | 16 | 19 | 167 |
+| Add order, crossing 3 levels | 19 | 21 | 22 | 23 | 186 |
+| Cancel, resting | 26 | 32 | 35 | 65 | 179 |
+| Market order, sweep 1 level | 8 | 9 | 9 | 10 | 157 |
+| Market order, sweep 2 levels | 14 | 15 | 16 | 18 | 173 |
+| Market order, sweep 3 levels | 19 | 20 | 22 | 23 | 177 |
+| Mixed flow | 32 | 41 | 46 | 80 | 346 |
+
+Mixed flow throughput: **30,470,598 ops/s** (median run; 30,218,134–30,659,261 across the ten runs).
 
 ### Methodology
 
-Apple M5 (arm64, 32 GB, macOS), Apple clang 21, release preset: `-O3 -DNDEBUG` with no `-march=native`, so the flags are reproducible on any Apple Silicon machine. The harness reads `cntvct_el0`, prints its rate and cross-checks it against the mach timebase. On this machine the counter declares 1 GHz but advances in steps of about 41.7 ns, so a single operation's timestamp is quantized to a couple of dozen values. Latency is therefore recorded in batches of N operations — the smallest power of two of at least 16 such that one sample spans 50 timer steps, labelled `batchN` — and divided by N; a machine whose counter steps by 2 ns or less uses true per-operation timestamps and is labelled `per_op`. Percentiles (p50, p90, p99, p99.9, max) come from an HDR histogram covering 1 ns to 10 ms at three significant figures. Every benchmark runs five repetitions and the report uses the median run. macOS has no core isolation or thread pinning: the harness asks for user-interactive QoS and reports whether the hint was applied, but a busy machine still perturbs the tails. That is why `scripts/run_benchmarks.sh` refuses to start unless the 1-minute load average is at or below 1.0 and no compilers, builds or CI runner workers are running.
+Apple M5 (arm64, 32 GB, macOS), Apple clang 21, release preset: `-O3 -DNDEBUG` with no `-march=native`, so the flags are reproducible on any Apple Silicon machine. The harness reads `cntvct_el0`, prints its rate and cross-checks it against the mach timebase. On this machine the counter declares 1 GHz but advances in steps of about 41.7 ns, so a single operation's timestamp is quantized to a couple of dozen values. Latency is therefore recorded in batches of N operations — the smallest power of two of at least 16 such that one sample spans 50 timer steps, labelled `batchN` — and divided by N; a machine whose counter steps by 2 ns or less uses true per-operation timestamps and is labelled `per_op`. Percentiles (p50, p90, p99, p99.9, max) come from an HDR histogram covering 1 ns to 10 ms at three significant figures. `scripts/run_benchmarks.sh --compare` runs five repetitions per round over two interleaved rounds per build (ten runs in total) and reports the median run; a single-build run is one round of five. macOS has no core isolation or thread pinning: the harness asks for user-interactive QoS and reports whether the hint was applied, but a busy machine still perturbs the tails. That is why `scripts/run_benchmarks.sh` refuses to start unless the 1-minute load average is at or below `LOB_BENCH_MAX_LOAD` (2.0 for the run above) and no compilers, builds or CI runner workers are running.
 
 ## The optimization
 
@@ -22,7 +34,25 @@ The initial price-level container was a `std::map<Price, Level>` per side: corre
 
 Both ladders implement the same `PriceLadder` interface, so matching, the digest walk and the tests are unchanged. `release` (and `release-array`) build the array ladder; `release-tree` builds the tree baseline. Both presets pass the full test suite and the differential test, and the nightly runs the long differential test on both.
 
-<!-- BENCH-COMPARE -->
+### Tree ladder vs array ladder
+
+Same machine and flags as above; one `scripts/run_benchmarks.sh --compare` run interleaved the two builds over two rounds, ten runs per benchmark. Latency in nanoseconds, median run per build:
+
+| Benchmark | p50 tree | p50 array | p50 ratio | p99 tree | p99 array | p99 ratio | p99.9 tree | p99.9 array | p99.9 ratio |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Add order, non-crossing | 14 | 13 | 0.93× | 23 | 22 | 0.96× | 24 | 24 | 1.00× |
+| Add order, crossing 1 level | 9 | 8 | 0.89× | 10 | 9 | 0.90× | 10 | 10 | 1.00× |
+| Add order, crossing 2 levels | 15 | 14 | 0.93× | 17 | 16 | 0.94× | 21 | 19 | 0.90× |
+| Add order, crossing 3 levels | 20 | 19 | 0.95× | 23 | 22 | 0.96× | 27 | 23 | 0.85× |
+| Cancel, resting | 27 | 26 | 0.96× | 35 | 35 | 1.00× | 65 | 65 | 1.00× |
+| Market order, sweep 1 level | 9 | 8 | 0.89× | 10 | 9 | 0.90× | 11 | 10 | 0.91× |
+| Market order, sweep 2 levels | 15 | 14 | 0.93× | 17 | 16 | 0.94× | 20 | 18 | 0.90× |
+| Market order, sweep 3 levels | 20 | 19 | 0.95× | 23 | 22 | 0.96× | 25 | 23 | 0.92× |
+| Mixed flow | 33 | 32 | 0.97× | 47 | 46 | 0.98× | 84 | 80 | 0.95× |
+
+Mixed flow throughput: 29,515,306 → 30,470,598 ops/s (1.03×).
+
+The array ladder wins on the matching-heavy rows: crossing and market orders get 4–11% off p50 (0.89–0.95×), and the three-level sweep's p99.9 falls from 27 ns to 23 ns, because best-price and next-level lookups become indexed loads instead of tree descents. It helps least where the tree was never the cost: cancels are 0.96× at p50 and unchanged at p99, and non-crossing adds are flat at p99.9, so the overall gain is a few percent rather than an order of magnitude. Treat the tail columns as smoothed: these are `batch128` samples, each the per-op average over 128 operations, so the p99 and p99.9 figures understate the tail of a single operation.
 
 ## Correctness
 
