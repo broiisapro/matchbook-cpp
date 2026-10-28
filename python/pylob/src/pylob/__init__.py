@@ -14,6 +14,14 @@ the resting price.
 ``pylob.replay`` replays a flow file through either engine and returns the
 summary ``lobsim replay`` prints; ``pylob.read_flow`` exposes the records of a
 flow file for tools that need to drive the book one record at a time.
+
+``pylob.OrderType`` and ``pylob.RejectReason`` mirror ``lob/types.hpp``: the
+member names are the CamelCase form of the engine's ``to_string`` words (the
+same words the CSV flow format uses) and the integer values are the flow-file
+bytes, so ``OrderType.FOK.value == 3`` and ``OrderType.PostOnly.value == 4``.
+FOK and post-only follow the Phase 2 contract in ``docs/architecture.md``
+sections 4.1.1 and 4.1.2; an engine that has not implemented them yet rejects
+them with ``RejectReason.UnsupportedOrderType`` before any other validation.
 """
 
 from __future__ import annotations

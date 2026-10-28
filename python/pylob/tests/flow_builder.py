@@ -30,13 +30,15 @@ SELL = 1
 LIMIT = 0
 MARKET = 1
 IOC = 2
+FOK = 3
+POST_ONLY = 4
 
 #: (op, side, type, id, price, qty, ts_ns)
 Record = tuple[int, int, int, int, int, int, int]
 
 _OP_WORDS = {SUBMIT: "submit", CANCEL: "cancel", MODIFY: "modify"}
 _SIDE_WORDS = {BUY: "buy", SELL: "sell"}
-_TYPE_WORDS = {LIMIT: "limit", MARKET: "market", IOC: "ioc"}
+_TYPE_WORDS = {LIMIT: "limit", MARKET: "market", IOC: "ioc", FOK: "fok", POST_ONLY: "post_only"}
 
 
 def write_flow(path: str | Path, records: Iterable[Record]) -> Path:
