@@ -372,18 +372,39 @@ resting price. Every state change is reported to an optional listener.
       .value("Buy", Side::Buy)
       .value("Sell", Side::Sell);
 
-  py::enum_<OrderType>(m, "OrderType", "Order type passed to submit().")
+  py::enum_<OrderType>(m, "OrderType", R"doc(
+Order type passed to submit().
+
+The member names are the CamelCase form of the engine's to_string() words,
+which are also the words the CSV flow format uses: ``Limit`` ("limit"),
+``Market`` ("market"), ``IOC`` ("ioc"), ``FOK`` ("fok") and ``PostOnly``
+("post_only"). The underlying integer values are the flow-file type byte:
+limit 0, market 1, IOC 2, FOK 3, post-only 4.
+)doc")
       .value("Limit", OrderType::Limit)
       .value("Market", OrderType::Market)
-      .value("IOC", OrderType::IOC);
+      .value("IOC", OrderType::IOC)
+      .value("FOK", OrderType::FOK)
+      .value("PostOnly", OrderType::PostOnly);
 
-  py::enum_<RejectReason>(m, "RejectReason", "Reason attached to a rejection event.")
+  py::enum_<RejectReason>(m, "RejectReason", R"doc(
+Reason attached to a rejection event.
+
+The member names are the CamelCase form of the engine's to_string() words:
+``DuplicateId`` ("duplicate_id"), ``UnknownOrder`` ("unknown_order"),
+``InvalidQuantity`` ("invalid_quantity"), ``InvalidPrice`` ("invalid_price"),
+``CapacityExceeded`` ("capacity_exceeded"), ``ModifyNoChange``
+("modify_no_change"), ``UnsupportedOrderType`` ("unsupported_order_type") and
+``WouldCross`` ("would_cross").
+)doc")
       .value("DuplicateId", RejectReason::DuplicateId)
       .value("UnknownOrder", RejectReason::UnknownOrder)
       .value("InvalidQuantity", RejectReason::InvalidQuantity)
       .value("InvalidPrice", RejectReason::InvalidPrice)
       .value("CapacityExceeded", RejectReason::CapacityExceeded)
-      .value("ModifyNoChange", RejectReason::ModifyNoChange);
+      .value("ModifyNoChange", RejectReason::ModifyNoChange)
+      .value("UnsupportedOrderType", RejectReason::UnsupportedOrderType)
+      .value("WouldCross", RejectReason::WouldCross);
 
   py::class_<lob::Config>(m, "Config", R"doc(
 Engine configuration: the price range and the order and level capacities.
@@ -446,11 +467,18 @@ partially.
            py::arg("price"), py::arg("qty"),
            R"doc(Submits an order.
 
-Validation, first failure wins: non-positive quantity -> InvalidQuantity; a
-limit or IOC price outside the configured range -> InvalidPrice; an id that is
-already resting -> DuplicateId. A market order ignores the price. A limit
-remainder rests at the back of its level; market and IOC remainders are
-cancelled.
+Validation, first failure wins: an engine that does not implement FOK or
+post-only yet rejects those two types with UnsupportedOrderType before every
+other check (docs/architecture.md section 4.1); then a non-positive quantity ->
+InvalidQuantity; a limit, IOC, FOK or post-only price outside the configured
+range -> InvalidPrice; an id that is already resting -> DuplicateId. A market
+order ignores the price.
+
+A limit remainder rests at the back of its level; market and IOC remainders
+are cancelled. FOK (fill or kill) must fill completely against the crossing
+liquidity or it is accepted and then cancelled in full without trading, and it
+never rests. PostOnly adds liquidity only: it is rejected with WouldCross when
+it would trade on arrival and otherwise rests exactly like a limit order.
 )doc")
       .def("cancel", &BoundOrderBook::cancel, py::arg("id"),
            "Cancels a resting order. An unknown id is rejected with UnknownOrder.")
