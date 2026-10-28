@@ -1,0 +1,10 @@
+# Docker build context for docker/Dockerfile. The image builds from source, so
+# host build trees, the shared vcpkg clone and orchestration state are excluded.
+build/
+vcpkg/
+vcpkg_installed/
+.worktrees/
+.orchestration/
+.git/
+.venv/
+__pycache__/
