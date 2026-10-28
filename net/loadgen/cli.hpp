@@ -1,0 +1,39 @@
+#pragma once
+
+// Command-line surface of lob_loadgen. Parsing lives in net/loadgen so the
+// tests can exercise every flag without running the binary.
+
+#include <chrono>
+#include <cstdint>
+#include <string>
+
+#include "lob/types.hpp"
+#include "net/loadgen/endpoint.hpp"
+
+namespace lob::loadgen {
+
+struct CliOptions {
+  Endpoint gateway;
+  std::string gateway_text;
+  std::uint32_t sessions = 1;
+  std::uint64_t orders = 0;
+  double rate = 0.0;
+  std::uint64_t seed = 1;
+  std::string report_path;
+  std::chrono::milliseconds response_timeout{5000};
+  lob::Price min_price = 1;
+  lob::Price max_price = 200000;
+  bool help = false;
+};
+
+enum class CliStatus { Ok, Help, Error };
+
+/// Parses argv (excluding argv[0]). On Error, `error` describes the first
+/// problem and `out` is unspecified. `--help` returns CliStatus::Help with
+/// `out.help` set.
+CliStatus parse_cli(int argc, char** argv, CliOptions& out, std::string& error);
+
+/// Usage text, one option per line.
+std::string usage();
+
+}  // namespace lob::loadgen
