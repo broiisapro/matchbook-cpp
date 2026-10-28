@@ -3,9 +3,10 @@
 # Build the linux/arm64 image and smoke-test it inside the container.
 #
 # The image itself compiles the portable targets and runs their CTest suite in
-# the build stage; this script then exercises the resulting lobsim binary:
-# `--help` and a 100k-operation differential test, so the engine, the reference
-# engine and the tools are checked on Linux rather than only compiled.
+# the build stage; this script then exercises the resulting binaries: `lobsim
+# --help`, a 100k-operation differential test and the help text of the four
+# Phase 3 services, so the engine, the reference engine, the tools and the
+# services are checked on Linux rather than only compiled.
 #
 # Usage:
 #   scripts/docker_build.sh            # cached build
@@ -30,7 +31,7 @@ for arg in "$@"; do
   case "$arg" in
     --no-cache) docker_args+=("--no-cache") ;;
     -h | --help)
-      sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -81,5 +82,13 @@ if ! printf '%s\n' "$difftest_output" | grep -qx 'mismatches: 0'; then
   log "differential test failed: expected 'mismatches: 0'"
   exit 1
 fi
+
+for binary in lob_gateway lob_publisher lob_md_listen lob_loadgen; do
+  log "running $binary --help in the container"
+  if ! docker run --rm --platform "$platform" --entrypoint "/usr/local/bin/$binary" "$image" --help >/dev/null; then
+    log "$binary --help failed"
+    exit 1
+  fi
+done
 
 log "ok: $image"

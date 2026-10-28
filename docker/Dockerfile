@@ -1,9 +1,10 @@
 # syntax=docker/dockerfile:1
 #
 # linux/arm64 image for the portable targets: the fast engine, the reference
-# engine, the flow-file tools, the operation generator, the wire protocol and
-# lobsim. The tests run during the build, so a broken Linux port fails the
-# image rather than shipping a binary nobody exercised.
+# engine, the flow-file tools, the operation generator, the wire protocol,
+# lobsim and the Phase 3 services (gateway, publisher, market-data listener and
+# load generator). The tests run during the build, so a broken Linux port fails
+# the image rather than shipping a binary nobody exercised.
 #
 # Build from the repository root (scripts/docker_build.sh does exactly this):
 #   docker build --platform linux/arm64 -f docker/Dockerfile -t matchbook-cpp:linux-arm64 .
@@ -72,15 +73,21 @@ RUN cmake -S /src -B /src/build -G Ninja \
         -DLOB_PRICE_LADDER=array
 
 # test_alloc is built too: ctest registers its tests, so leaving the binary out
-# would leave the suite unable to discover them.
+# would leave the suite unable to discover them. The four Phase 3 executables
+# are what docker-compose.yml runs; building them here means a Compose demo
+# can never pick up a stale or missing binary.
 RUN cmake --build /src/build --target \
-        lob lob_reference lob_flowfile lob_opgen lob_net lobsim lob_tests test_alloc
+        lob lob_reference lob_flowfile lob_opgen lob_net lobsim lob_tests test_alloc \
+        lob_gateway lob_publisher lob_md_listen lob_loadgen
 
 RUN ctest --test-dir /src/build --output-on-failure
 
 # ---------------------------------------------------------------------------
-# Runtime stage: just the CLI. `lobsim` is statically linked against zlib and
-# xxHash from vcpkg and needs only the C++ runtime.
+# Runtime stage: the CLI and the Phase 3 services. Everything is statically
+# linked against zlib, xxHash and the HDR histogram from vcpkg and needs only
+# the C++ runtime. bash is present in the Ubuntu base image and is what the
+# Compose health checks use (/dev/tcp and /proc/net), so nothing extra is
+# installed for them.
 # ---------------------------------------------------------------------------
 FROM ubuntu:${UBUNTU_VERSION} AS runtime
 
@@ -89,6 +96,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /src/build/lobsim /usr/local/bin/lobsim
+COPY --from=build /src/build/lob_gateway /usr/local/bin/lob_gateway
+COPY --from=build /src/build/lob_publisher /usr/local/bin/lob_publisher
+COPY --from=build /src/build/lob_md_listen /usr/local/bin/lob_md_listen
+COPY --from=build /src/build/lob_loadgen /usr/local/bin/lob_loadgen
+COPY --chmod=755 docker/loadgen-entrypoint.sh /usr/local/bin/loadgen-entrypoint
 
 ENTRYPOINT ["/usr/local/bin/lobsim"]
 CMD ["--help"]
