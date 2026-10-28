@@ -117,11 +117,15 @@ Event: TypeAlias = Accept | Reject | Trade | Cancel | Modify | BookUpdate
 class RecordingListener(Listener):
     """Collects every event in order in ``events``.
 
-    >>> listener = RecordingListener()
-    >>> book = OrderBook(Config(), listener)
-    >>> book.submit(1, Side.Sell, OrderType.Limit, 100, 5)
-    >>> listener.events
-    [Accept(id=1), BookUpdate(side=<Side.Sell: 1>, price=100, new_level_qty=5)]
+    Example::
+
+        listener = RecordingListener()
+        book = OrderBook(Config(), listener)
+        book.submit(1, Side.Sell, OrderType.Limit, 100, 5)
+        assert listener.events == [
+            Accept(1),
+            BookUpdate(Side.Sell, 100, 5),
+        ]
     """
 
     def __init__(self) -> None:
