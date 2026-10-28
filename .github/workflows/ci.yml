@@ -31,9 +31,11 @@ jobs:
           clean: false
       - uses: ./.github/actions/setup
       - name: Configure (release)
-        run: cmake --preset release
+        run: cmake --preset release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: Build (release)
         run: cmake --build --preset release
+      - name: ccache statistics
+        run: ccache --show-stats
 
   test:
     name: test
@@ -50,11 +52,13 @@ jobs:
           clean: false
       - uses: ./.github/actions/setup
       - name: Configure (release)
-        run: cmake --preset release
+        run: cmake --preset release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: Build (release)
         run: cmake --build --preset release
       - name: Run tests (release)
         run: ctest --preset release
+      - name: ccache statistics
+        run: ccache --show-stats
 
   asan:
     name: asan
@@ -66,11 +70,31 @@ jobs:
           clean: false
       - uses: ./.github/actions/setup
       - name: Configure (asan)
-        run: cmake --preset asan
+        run: cmake --preset asan -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: Build (asan)
         run: cmake --build --preset asan
       - name: Run tests (asan)
         run: ctest --preset asan
+      - name: ccache statistics
+        run: ccache --show-stats
+
+  tsan:
+    name: tsan
+    runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["self-hosted","macOS","ARM64"]') }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          clean: false
+      - uses: ./.github/actions/setup
+      - name: Configure (tsan)
+        run: cmake --preset tsan -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build (tsan)
+        run: cmake --build --preset tsan
+      - name: Run tests (tsan)
+        run: ctest --preset tsan --output-on-failure
+      - name: ccache statistics
+        run: ccache --show-stats
 
   format:
     name: format
@@ -84,9 +108,10 @@ jobs:
           clean: false
       - uses: ./.github/actions/setup
         with:
-          # The formatter comes from uv; this job does not build anything, so
-          # it does not need vcpkg.
+          # The formatter and pytest come from uv; this job does not compile
+          # anything, so it needs neither vcpkg nor ccache.
           bootstrap-vcpkg: "false"
+          ccache: "false"
       - name: Print pinned formatter version
         run: uvx clang-format==23.1.3 --version
       - name: Check formatting
@@ -94,6 +119,10 @@ jobs:
           # Tracked source paths never contain spaces, so word splitting is safe here.
           # shellcheck disable=SC2046
           uvx clang-format==23.1.3 --dry-run --Werror $(git ls-files '*.hpp' '*.cpp')
+      - name: Run the script tests
+        # The report renderer and fixture scripts are part of the deliverable;
+        # --frozen keeps CI on the committed lockfile.
+        run: uv run --frozen pytest -q scripts/
 
   tidy:
     name: tidy
@@ -108,8 +137,10 @@ jobs:
           clean: false
       - uses: ./.github/actions/setup
         with:
-          # This is the only job that needs Homebrew LLVM.
+          # This is the only job that needs Homebrew LLVM; it runs clang-tidy
+          # over an existing compile database, never a compiler through ccache.
           install-llvm: "true"
+          ccache: "false"
       - name: Configure (release)
         run: cmake --preset release
       - name: Run clang-tidy (advisory)

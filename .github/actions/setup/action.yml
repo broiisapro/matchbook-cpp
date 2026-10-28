@@ -5,13 +5,17 @@
 # because the runner keeps its own binary archives under
 # ~/.cache/vcpkg/archives. On a GitHub-hosted runner every job starts with a
 # clean workspace, so the same steps install what the image lacks, restore the
-# binary cache and bootstrap vcpkg.
+# binary and compiler caches and bootstrap vcpkg.
 name: Set up the build environment
-description: Install missing tools, ensure uv, restore the vcpkg cache and bootstrap vcpkg.
+description: Install missing tools, ensure uv, restore the caches and bootstrap vcpkg.
 
 inputs:
   bootstrap-vcpkg:
     description: Restore the vcpkg binary cache and bootstrap vcpkg.
+    required: false
+    default: "true"
+  ccache:
+    description: Install ccache and point CCACHE_DIR at the shared cache.
     required: false
     default: "true"
   install-llvm:
@@ -32,6 +36,9 @@ runs:
         for tool in cmake ninja pkg-config; do
           command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
         done
+        if [[ "${{ inputs.ccache }}" == "true" ]] && ! command -v ccache >/dev/null 2>&1; then
+          missing+=("ccache")
+        fi
         if [[ "${{ inputs.install-llvm }}" == "true" ]] && ! brew list --versions llvm >/dev/null 2>&1; then
           missing+=("llvm")
         fi
@@ -63,16 +70,43 @@ runs:
       run: echo "VCPKG_ROOT=$HOME/.cache/matchbook/vcpkg" >> "$GITHUB_ENV"
 
     # vcpkg.json, the pinned baseline and the compiler decide which port
-    # binaries are reusable, so they form the cache key.
+    # binaries are reusable; the compiler version also decides which ccache
+    # entries are reusable, so one fingerprint step serves both caches.
     - name: Fingerprint the toolchain
       id: fingerprint
-      if: inputs.bootstrap-vcpkg == 'true'
+      if: inputs.bootstrap-vcpkg == 'true' || inputs.ccache == 'true'
       shell: bash
       run: |
         baseline="$(sed -n 's/.*"builtin-baseline"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' vcpkg.json)"
         clang="$(clang --version | head -n 1 | tr -cs 'A-Za-z0-9._-' '-')"
         echo "baseline=$baseline" >> "$GITHUB_OUTPUT"
         echo "clang=$clang" >> "$GITHUB_OUTPUT"
+
+    - name: Configure ccache
+      if: inputs.ccache == 'true'
+      shell: bash
+      run: |
+        # Both runner kinds keep the cache under the same directory: on the
+        # self-hosted runner it persists in the user's cache and is shared by
+        # every job; on a hosted runner the cache action below restores and
+        # saves it because the workspace starts empty.
+        echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
+        echo "CCACHE_BASEDIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+        ccache --version | sed -n '1p'
+
+    - name: Restore the ccache cache
+      if: inputs.ccache == 'true' && runner.environment == 'github-hosted'
+      uses: actions/cache@v6
+      with:
+        path: ~/.cache/ccache
+        # The compiler and the commit identify the entries; the job name keeps
+        # the sanitizer builds from racing each other to save the same key
+        # while still restoring whatever the newest cache for this compiler
+        # holds, so a PR's earlier pushes seed the next one.
+        key: ccache-${{ runner.os }}-${{ runner.arch }}-${{ steps.fingerprint.outputs.clang }}-${{ github.sha }}-${{ github.job }}
+        restore-keys: |
+          ccache-${{ runner.os }}-${{ runner.arch }}-${{ steps.fingerprint.outputs.clang }}-
+          ccache-${{ runner.os }}-${{ runner.arch }}-
 
     - name: Restore the vcpkg binary cache
       if: inputs.bootstrap-vcpkg == 'true' && runner.environment == 'github-hosted'
