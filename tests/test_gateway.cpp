@@ -506,4 +506,14 @@ TEST_F(GatewayTest, MarketDataStreamCarriesBookUpdates) {
   EXPECT_EQ(update->qty, 7);
 }
 
+TEST_F(GatewayTest, StopClosesSessionsAfterAnsweringQueuedCommands) {
+  WireClient client(port());
+  ASSERT_TRUE(client.connected());
+  ASSERT_TRUE(client.send(limit_order(1, lob::Side::Buy, 100, 1)));
+  ASSERT_TRUE(next_message<proto::Ack>(client, proto::MessageType::Ack).has_value());
+
+  gateway_->stop();
+  EXPECT_TRUE(client.wait_for_close());
+}
+
 }  // namespace

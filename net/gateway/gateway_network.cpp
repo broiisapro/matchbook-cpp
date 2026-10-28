@@ -580,17 +580,22 @@ void GatewayState::run_network() {
   net.gateway = this;
 
   for (;;) {
-    // Retry input that was held back while the command ring was full.
-    for (const auto& connection : net.connections) {
-      if (!connection->closing && !connection->in.empty() && connection->kind == ConnKind::Entry) {
-        feed(net, *connection);
+    const bool stopping = stop_requested.load(std::memory_order_acquire);
+    // Retry input that was held back while the command ring was full. Once a
+    // shutdown starts no new command is accepted, so the engine cannot exit
+    // while commands are still being queued behind it.
+    if (!stopping) {
+      for (const auto& connection : net.connections) {
+        if (!connection->closing && !connection->in.empty() &&
+            connection->kind == ConnKind::Entry) {
+          feed(net, *connection);
+        }
       }
     }
     drain_md(net);
     drain_responses(net);
 
-    if (stop_requested.load(std::memory_order_acquire) &&
-        engine_done.load(std::memory_order_acquire) && md.size_approx() == 0 &&
+    if (stopping && engine_done.load(std::memory_order_acquire) && md.size_approx() == 0 &&
         responses.size_approx() == 0) {
       break;
     }
@@ -603,7 +608,7 @@ void GatewayState::run_network() {
       net.poll_targets.push_back(NetworkState::Target{kind, connection});
     };
     add(wake_read, POLLIN, NetworkState::Target::Kind::Wake, nullptr);
-    if (!stop_requested.load(std::memory_order_acquire)) {
+    if (!stopping) {
       add(entry_listener, POLLIN, NetworkState::Target::Kind::EntryListener, nullptr);
       add(md_listener, POLLIN, NetworkState::Target::Kind::MdListener, nullptr);
     }
@@ -611,7 +616,9 @@ void GatewayState::run_network() {
       if (connection->closing) {
         continue;
       }
-      short events = POLLIN;
+      // While stopping, only flush what is already queued: a client that
+      // keeps sending must not push commands at an engine that already left.
+      short events = stopping ? 0 : POLLIN;
       if (connection->pending() > 0) {
         events |= POLLOUT;
       }
@@ -652,6 +659,12 @@ void GatewayState::run_network() {
     reap_connections(net);
   }
 
+  // Best-effort final flush of whatever the engine produced during shutdown.
+  for (const auto& connection : net.connections) {
+    if (!connection->closing) {
+      flush_connection(net, *connection);
+    }
+  }
   for (const auto& connection : net.connections) {
     close_connection(net, *connection);
   }
