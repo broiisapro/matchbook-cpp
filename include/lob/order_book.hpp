@@ -115,8 +115,9 @@ class OrderBook {
 
   /// Places an order whose validation has already passed: emits on_accept,
   /// matches, then rests a limit remainder under the capacity rules or
-  /// cancels a market/IOC remainder. Shared by submit and by modify's
-  /// cancel + new path.
+  /// cancels a market/IOC remainder. A FOK is killed after on_accept when the
+  /// crossing quantity is short, and a PostOnly (which never crosses here)
+  /// always rests. Shared by submit and by modify's cancel + new path.
   void place(OrderId id, Side side, OrderType type, Price price, Qty qty);
 
   /// Removes a live order: on_cancel(id, remaining), unlink (which emits
@@ -141,6 +142,16 @@ class OrderBook {
   /// on_book_update, or emits on_cancel when the order or level capacity is
   /// exhausted.
   void rest(OrderId id, Side side, Price price, Qty qty);
+
+  /// True when the best price on the opposite side already crosses this limit
+  /// price, i.e. a PostOnly order at this price would take liquidity
+  /// (section 4.1.2).
+  bool would_cross(Side side, Price price) const;
+
+  /// True when the resting opposite side holds at least `qty` at the levels
+  /// this limit price crosses (section 4.1.1). Walks the levels best first
+  /// without mutating the book and stops as soon as the quantity is covered.
+  bool can_fill_immediately(Side side, Price price, Qty qty) const;
 
   // Listener callbacks are routed through these helpers so the reentrancy
   // guard is armed for exactly as long as a callback is in flight.
