@@ -64,6 +64,11 @@ struct OpMix {
   // Submit shape (percent).
   std::uint32_t market_weight = 6;
   std::uint32_t ioc_weight = 10;
+  // Phase 2 order types. Both engines reject them until the matching semantics
+  // land (decision C47), so the generator emits them only to keep the reject
+  // path in the differential test; every preset keeps these small.
+  std::uint32_t fok_weight = 2;
+  std::uint32_t post_only_weight = 2;
   std::uint32_t crossing_weight = 20;
   std::uint32_t edge_price_weight = 12;
   std::uint32_t invalid_qty_weight = 4;
@@ -102,8 +107,9 @@ OpMix wide_mix();
 /// tail of the queue at the best modelled level, or a random live id. It also
 /// produces unknown ids, duplicate live ids, ids reused after a cancel,
 /// crossing orders, prices at the configured edges and just outside, invalid
-/// quantities, and market/IOC orders against possibly empty sides. A mid price
-/// random walk keeps the modelled book deep.
+/// quantities, market/IOC orders against possibly empty sides, and a small
+/// share of FOK and PostOnly orders (rejected as unsupported until Phase 2). A
+/// mid price random walk keeps the modelled book deep.
 ///
 /// Randomness is std::mt19937_64 only; every distribution is implemented in
 /// this file with integer arithmetic. No std::*_distribution is used, so the
