@@ -115,18 +115,25 @@ add_executable(lobsim "${CMAKE_CURRENT_SOURCE_DIR}/tools/lobsim/main.cpp")
 target_link_libraries(lobsim PRIVATE lobsim_core)
 
 # Benchmarks.
-file(GLOB LOB_BENCH_SOURCES CONFIGURE_DEPENDS
-     "${CMAKE_CURRENT_SOURCE_DIR}/bench/*.cpp")
-add_executable(lob_bench ${LOB_BENCH_SOURCES})
-target_include_directories(lob_bench PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-# The JSON context records the compiler flags this binary was built with.
-string(TOUPPER "${CMAKE_BUILD_TYPE}" LOB_BENCH_BUILD_TYPE)
-string(STRIP "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${LOB_BENCH_BUILD_TYPE}}"
-       LOB_BENCH_BUILD_FLAGS)
-target_compile_definitions(lob_bench PRIVATE
-                           "LOB_BENCH_BUILD_FLAGS=\"${LOB_BENCH_BUILD_FLAGS}\"")
-target_link_libraries(lob_bench PRIVATE lob benchmark::benchmark
-                                       hdr_histogram::hdr_histogram_static)
+#
+# The benchmark binary uses the macOS timer in bench/timer.hpp, so it is
+# skipped on Linux: the linux-release preset sets LOB_BUILD_BENCH=OFF. The
+# option stays ON by default so every macOS preset builds it unchanged.
+option(LOB_BUILD_BENCH "Build the benchmark binary" ON)
+if(LOB_BUILD_BENCH)
+  file(GLOB LOB_BENCH_SOURCES CONFIGURE_DEPENDS
+       "${CMAKE_CURRENT_SOURCE_DIR}/bench/*.cpp")
+  add_executable(lob_bench ${LOB_BENCH_SOURCES})
+  target_include_directories(lob_bench PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  # The JSON context records the compiler flags this binary was built with.
+  string(TOUPPER "${CMAKE_BUILD_TYPE}" LOB_BENCH_BUILD_TYPE)
+  string(STRIP "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${LOB_BENCH_BUILD_TYPE}}"
+         LOB_BENCH_BUILD_FLAGS)
+  target_compile_definitions(lob_bench PRIVATE
+                             "LOB_BENCH_BUILD_FLAGS=\"${LOB_BENCH_BUILD_FLAGS}\"")
+  target_link_libraries(lob_bench PRIVATE lob benchmark::benchmark
+                                         hdr_histogram::hdr_histogram_static)
+endif()
 
 # SPSC ring buffer (Epic 04). Both are standalone tools over the header-only
 # ring: a TSan stress loop and an enqueue-to-callback latency harness. The
