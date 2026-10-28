@@ -84,7 +84,7 @@ struct FeedHandlerConfig {
   bool auto_recovery = true;
 };
 
-/// Observable counters. `received` counts data frames read from UDP datagrams
+/// Observable counters. `received` counts frames read from live UDP datagrams
 /// (duplicates included); recovered frames are reported in `recovery_messages`
 /// so a huge recovery does not inflate the live-stream rate. `gaps_detected`
 /// counts distinct missing-range episodes and `gaps_recovered` those closed by

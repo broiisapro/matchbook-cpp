@@ -241,7 +241,7 @@ TEST(md_client_feed_handler, RecoveryAnswersWithAResetWhenFramesAreGone) {
   EXPECT_EQ(counters.resets, 1U);
   EXPECT_EQ(counters.gaps_detected, 1U);
   EXPECT_EQ(counters.gaps_recovered, 1U);
-  EXPECT_EQ(counters.gaps_detected, 1U);
+  EXPECT_GE(counters.recovery_requests, 1U);
   EXPECT_EQ(handler->book().quantity_at(lob::Side::Buy, 99), std::optional<lob::Qty>(2));
 }
 
