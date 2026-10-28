@@ -56,6 +56,21 @@
       }
     },
     {
+      "name": "linux-release",
+      "displayName": "Release (Linux arm64)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_CXX_FLAGS": "-fsized-deallocation",
+        "CMAKE_CXX_SCAN_FOR_MODULES": "OFF",
+        "VCPKG_TARGET_TRIPLET": "arm64-linux",
+        "LOB_PRICE_LADDER": "array",
+        "LOB_BUILD_BENCH": "OFF"
+      }
+    },
+    {
       "name": "asan",
       "displayName": "ASan + UBSan",
       "inherits": "base",
@@ -98,6 +113,10 @@
       "configurePreset": "release-array"
     },
     {
+      "name": "linux-release",
+      "configurePreset": "linux-release"
+    },
+    {
       "name": "asan",
       "configurePreset": "asan"
     },
@@ -131,6 +150,13 @@
     {
       "name": "release-array",
       "configurePreset": "release-array",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "linux-release",
+      "configurePreset": "linux-release",
       "output": {
         "outputOnFailure": true
       }
