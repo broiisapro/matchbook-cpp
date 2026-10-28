@@ -150,3 +150,47 @@ GitHub Actions on self-hosted runners (`runs-on: [self-hosted, macOS, ARM64]`), 
 ## 13. Testing strategy
 
 Unit tests per component; the classic-bug tests named in the PRD; the differential test; the allocation test (`test_alloc` binary, global operator new/delete replaced, counting armed only around the hot loop, skipped under sanitizers); ASan+UBSan run of the full suite in CI; determinism check (debug vs release digests on the same flow).
+
+## 14. Wire protocol (Phase 3)
+
+The Phase-3 services (gateway, market-data publisher, recovery service) share one binary protocol, built in `net/protocol/` as the `lob_net` static library: `messages.hpp` holds the message table and compile-time sizes, `codec.{hpp,cpp}` converts between bytes and messages, and `framer.{hpp,cpp}` turns an arbitrary byte stream into frames. Every integer is little-endian and every message is fixed size. Fields are written and read one at a time; no struct is ever `memcpy`'d, so the layout does not depend on host byte order, alignment or padding.
+
+### 14.1 Common header
+
+Every frame starts with this 16-byte header:
+
+| Offset | Field | Type | Notes |
+|---|---|---|---|
+| 0 | type | u16 | message id from §14.2 |
+| 2 | length | u16 | body size in bytes, header excluded (a frame is 16 + length bytes) |
+| 4 | seq | u64 | sender's per-connection sequence number, increasing by one per frame |
+| 12 | reserved | u32 | zero; a non-zero value is a protocol error |
+
+### 14.2 Messages
+
+| Id | Message | Direction | Body | Body layout (offset: field) |
+|---|---|---|---|---|
+| 1 | NewOrder | client → gateway | 32 | 0: order_id u64, 8: price i64, 16: qty i64, 24: side u8, 25: type u8, 26: reserved u8[6] |
+| 2 | Cancel | client → gateway | 16 | 0: order_id u64, 8: reserved u8[8] |
+| 3 | Modify | client → gateway | 24 | 0: order_id u64, 8: price i64, 16: qty i64 |
+| 4 | Heartbeat | client → gateway | 8 | 0: nonce u64 |
+| 5 | Ack | gateway → client | 16 | 0: order_id u64, 8: reserved u8[8] |
+| 6 | Reject | gateway → client | 16 | 0: order_id u64, 8: reason u8, 9: reserved u8[7] |
+| 7 | Fill | gateway → client | 40 | 0: maker_id u64, 8: taker_id u64, 16: price i64, 24: qty i64, 32: reserved u8[8] |
+| 8 | Cancelled | gateway → client | 16 | 0: order_id u64, 8: qty i64 |
+| 9 | BookUpdate | publisher → subscriber | 24 | 0: price i64, 8: qty i64, 16: side u8, 17: reserved u8[7] |
+| 10 | Trade | publisher → subscriber | 40 | 0: maker_id u64, 8: taker_id u64, 16: price i64, 24: qty i64, 32: reserved u8[8] |
+| 11 | SequenceReset | publisher → subscriber | 16 | 0: next_seq u64, 8: reserved u8[8] |
+| 12 | RecoveryRequest | subscriber → recovery | 16 | 0: from_seq u64, 8: to_seq u64 |
+
+Reserved bytes must be zero; encoders write them as zero and decoders reject a non-zero value. Type ids are appended only and never renumbered. The largest body is 40 bytes, so a frame never exceeds 56 bytes.
+
+`NewOrder.qty` is in lots and `price` in ticks; a market order sends price 0, which it ignores. `Modify.qty` is the new remaining quantity (not a delta). `BookUpdate.qty` is the new total at the level, 0 meaning the level is gone. `Cancelled.qty` is the quantity removed. `Fill.price` is the maker's resting price. `Heartbeat.nonce` is chosen by the client and echoed by the gateway's heartbeat, so the client can measure round-trip time. `SequenceReset.next_seq` is the first sequence number the subscriber should expect next; `RecoveryRequest` asks for the frames in `[from_seq, to_seq]` inclusive.
+
+Enum-valued fields use the wire values of `Side`, `OrderType` and `RejectReason` from `lob/types.hpp`: side 0 buy / 1 sell; order type 0 limit, 1 market, 2 IOC, 3 FOK, 4 post-only (the last two are reserved by decision C47 and gain semantics in Epic 06); reject reason 1–7, covering `RejectReason` plus `UnsupportedOrderType`. Decoders reject a side, order type or reason outside those ranges.
+
+### 14.3 Validation and framing
+
+Decoding a header checks, in order: enough bytes (Truncated), reserved zero (BadReserved), `length <= 40` (Oversize), a known type id (UnknownType), `length == body size of that type` (BadLength). A typed decoder then checks the body's reserved bytes (BadReserved) and enum ranges (InvalidField); the header type must also match the requested message (WrongType). Only after every check passes are the caller's output value and sequence number updated.
+
+`StreamFramer` accepts a stream in arbitrary chunks. It holds at most one frame (56 bytes, on the stack as a member) and never allocates: it copies header bytes until 16 are present, validates the header immediately — so a bad header is reported without waiting for a body — then copies the body and hands the complete frame to a `FrameSink` callback. `push()` reports how many input bytes it consumed; a sink that returns false stops the call (FramerResult::Stopped) and the caller resubmits the unconsumed bytes. A protocol error clears the buffer and latches until `reset()`; later pushes return Error without consuming input. The sink's span points into the framer's buffer and is valid only for the duration of the callback.

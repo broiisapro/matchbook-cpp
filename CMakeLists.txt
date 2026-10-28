@@ -68,6 +68,16 @@ target_include_directories(lob_opgen PUBLIC
                            "${CMAKE_CURRENT_SOURCE_DIR}"
                            "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
+# Wire protocol for Phase 3 (decision C50): message definitions, the
+# byte-by-byte codec and the partial-read stream framer. It depends on the
+# frozen lob types only, so it does not link the engine.
+file(GLOB LOB_NET_SOURCES CONFIGURE_DEPENDS
+     "${CMAKE_CURRENT_SOURCE_DIR}/net/**/*.cpp")
+add_library(lob_net STATIC ${LOB_NET_SOURCES})
+target_include_directories(lob_net PUBLIC
+                           "${CMAKE_CURRENT_SOURCE_DIR}"
+                           "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
 # CLI: gen, replay, difftest, convert-tardis. The subcommand implementations
 # live in lobsim_core so tests can call them directly; the executable is only
 # main.cpp plus the dispatch table.
@@ -103,7 +113,7 @@ file(GLOB LOB_TEST_SOURCES CONFIGURE_DEPENDS
 list(REMOVE_ITEM LOB_TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_alloc.cpp")
 add_executable(lob_tests ${LOB_TEST_SOURCES})
 target_include_directories(lob_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
-target_link_libraries(lob_tests PRIVATE lobsim_core GTest::gtest_main)
+target_link_libraries(lob_tests PRIVATE lobsim_core lob_net GTest::gtest_main)
 
 add_executable(test_alloc "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_alloc.cpp")
 target_link_libraries(test_alloc PRIVATE lob GTest::gtest_main)
