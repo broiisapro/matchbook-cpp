@@ -78,6 +78,28 @@ target_include_directories(lob_net PUBLIC
                            "${CMAKE_CURRENT_SOURCE_DIR}"
                            "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
+# Phase 3 executables (gateway, publisher, load generator) each live in
+# apps/<name>/ with its own CMakeLists.txt linking lob and lob_net; this hook
+# adds every such directory, so a new app never edits this file.
+file(GLOB LOB_APP_DIRS CONFIGURE_DEPENDS LIST_DIRECTORIES true
+     "${CMAKE_CURRENT_SOURCE_DIR}/apps/*")
+set(LOB_APP_SUBDIRECTORIES "")
+foreach(lob_app_dir IN LISTS LOB_APP_DIRS)
+  if(IS_DIRECTORY "${lob_app_dir}" AND EXISTS "${lob_app_dir}/CMakeLists.txt")
+    get_filename_component(lob_app_name "${lob_app_dir}" NAME)
+    list(APPEND LOB_APP_SUBDIRECTORIES "${lob_app_name}")
+  endif()
+endforeach()
+# file(GLOB) already sorts; sorting again keeps the order stable if the glob
+# ever stops doing so. Nothing is added while apps/ is absent or empty.
+list(SORT LOB_APP_SUBDIRECTORIES)
+foreach(lob_app_name IN LISTS LOB_APP_SUBDIRECTORIES)
+  add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/apps/${lob_app_name}")
+endforeach()
+set(LOB_APP_SUBDIRECTORIES
+    "${LOB_APP_SUBDIRECTORIES}"
+    CACHE INTERNAL "apps/<name> directories added by the Phase 3 hook")
+
 # CLI: gen, replay, difftest, convert-tardis. The subcommand implementations
 # live in lobsim_core so tests can call them directly; the executable is only
 # main.cpp plus the dispatch table.
