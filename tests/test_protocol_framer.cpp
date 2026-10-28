@@ -318,6 +318,26 @@ TEST(ProtocolFramer, StopsOnSinkRequestAndResumesWithoutLoss) {
   }
 }
 
+TEST(ProtocolFramer, SurvivesRandomGarbageStreams) {
+  std::mt19937 rng(99);
+  std::uniform_int_distribution<int> byte_value(0, 255);
+  for (std::size_t trial = 0; trial < 200; ++trial) {
+    std::vector<std::byte> garbage(trial % 200);
+    for (auto& value : garbage) {
+      value = static_cast<std::byte>(byte_value(rng));
+    }
+    proto::StreamFramer framer;
+    CollectingSink sink;
+    const auto result = framer.push(garbage, sink);
+    if (result.result == proto::FramerResult::Error) {
+      EXPECT_NE(framer.error(), proto::FramerError::None) << "trial " << trial;
+    } else {
+      EXPECT_EQ(framer.error(), proto::FramerError::None) << "trial " << trial;
+    }
+  }
+  SUCCEED();
+}
+
 TEST(ProtocolFramer, EmptyChunkIsAccepted) {
   proto::StreamFramer framer;
   CollectingSink sink;

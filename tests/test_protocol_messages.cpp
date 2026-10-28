@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <random>
 #include <span>
 
 #include "net/protocol/codec.hpp"
@@ -404,6 +405,43 @@ TEST(ProtocolMessages, DecodeHeader) {
   // A header is validated on its own: no body needs to be buffered.
   EXPECT_EQ(proto::decode_header(std::span<const std::byte>(bytes).first(kHeader), truncated),
             proto::DecodeStatus::Ok);
+}
+
+TEST(ProtocolMessages, SurvivesEverySingleByteMutation) {
+  // Flip each byte of a valid frame to 0x00 and to 0xFF. A mutation either
+  // decodes or is rejected; the decoders must never read outside the frame or
+  // return a status outside the enum (checked by ASan/UBSan too).
+  const auto original = encoded(proto::Fill{1, 2, 3, 4}, 5);
+  for (std::size_t i = 0; i < original.size(); ++i) {
+    for (const std::byte value : {std::byte{0x00}, std::byte{0xFF}}) {
+      auto mutated = original;
+      mutated[i] = value;
+      proto::Fill decoded{};
+      proto::Seq seq = 0;
+      const auto status = proto::decode(std::span<const std::byte>(mutated), decoded, seq);
+      EXPECT_LE(static_cast<unsigned>(status),
+                static_cast<unsigned>(proto::DecodeStatus::InvalidField))
+          << "byte " << i;
+    }
+  }
+}
+
+TEST(ProtocolMessages, SurvivesRandomBuffers) {
+  std::mt19937 rng(12345);
+  std::uniform_int_distribution<int> byte_value(0, 255);
+  std::array<std::byte, 64> buffer{};
+  for (std::size_t iteration = 0; iteration < 2000; ++iteration) {
+    const std::size_t size = iteration % (buffer.size() + 1);
+    for (std::size_t i = 0; i < size; ++i) {
+      buffer[i] = static_cast<std::byte>(byte_value(rng));
+    }
+    proto::Fill decoded{};
+    proto::Seq seq = 0;
+    const auto status = proto::decode(std::span<const std::byte>(buffer).first(size), decoded, seq);
+    EXPECT_LE(static_cast<unsigned>(status),
+              static_cast<unsigned>(proto::DecodeStatus::InvalidField))
+        << "buffer size " << size;
+  }
 }
 
 TEST(ProtocolMessages, DecodeStatusNames) {
