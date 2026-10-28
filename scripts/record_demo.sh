@@ -11,12 +11,19 @@
 # name, home-directory path or other machine detail. The intermediate cast file
 # lives in the temporary directory and is removed on exit.
 #
+# Wall-clock fields (`wall_ms`, `ns_per_record`, ...) are filtered out of the
+# recorded output: the demo demonstrates correctness, and timing is only
+# published from `scripts/run_benchmarks.sh` (decision C42). The script also
+# refuses to render the GIF if a timing field still appears in the cast.
+#
 # Environment:
 #   LOB_DEMO_BUILD_DIR   build directory containing lobsim (default build/release)
 #   LOB_DEMO_COLS        recorded terminal width (default 100)
 #   LOB_DEMO_ROWS        recorded terminal height (default 46)
 #   LOB_DEMO_FONT_SIZE   GIF font size in pixels (default 16)
 #   LOB_DEMO_SPEED       GIF playback speed (default 1.5)
+#   LOB_DEMO_CAST_OUT    copy the asciicast here before cleanup (default: keep
+#                        only in the temporary directory)
 #
 # asciinema and agg are installed with Homebrew when missing. Requires a prior
 # `cmake --build --preset release`.
@@ -70,11 +77,17 @@ prompt() {
   printf '\n\033[1;32m$ %s\033[0m\n' "$1"
 }
 
+# Prints the command's output without wall-clock fields. Output is forwarded
+# line by line (awk flushes each line) so the cast keeps the original pacing.
+filter_timing() {
+  awk '/^(wall_ms|ns_per_record|wall_ns|elapsed_ms):/ { next } { print; fflush() }'
+}
+
 run() {
   local description="$1"
   shift
   prompt "$description"
-  "$@"
+  "$@" | filter_timing
 }
 
 run "./lobsim gen --orders 1000000 --seed 42 --out flow.bin" \
@@ -107,6 +120,15 @@ mkdir -p "$assets_dir"
     --command "$work_dir/demo.sh" "$cast"
 )
 
+# The cast must not contain a wall-clock field: a timing line that slipped
+# through the filter would put unmeasured latency on the README front page. The
+# check runs before the GIF is rendered so a bad recording never reaches
+# assets/.
+if grep -qE '(wall_ms|ns_per_record|wall_ns|elapsed_ms)' "$cast"; then
+  echo "record_demo: wall-clock field found in the recording; refusing to use it" >&2
+  exit 1
+fi
+
 agg --quiet \
   --font-size "${LOB_DEMO_FONT_SIZE:-16}" \
   --theme github-dark \
@@ -114,6 +136,11 @@ agg --quiet \
   --fps-cap 20 \
   --speed "${LOB_DEMO_SPEED:-1.5}" \
   "$cast" "$assets_dir/demo.gif"
+
+if [[ -n "${LOB_DEMO_CAST_OUT:-}" ]]; then
+  cp "$cast" "$LOB_DEMO_CAST_OUT"
+  printf 'record_demo: cast copied to %s\n' "$LOB_DEMO_CAST_OUT"
+fi
 
 duration="$(
   awk -F',' '/^\[/ { seconds = $1; gsub(/[^0-9.]/, "", seconds); if (seconds + 0 > longest) longest = seconds + 0 } END { printf "%.1f", longest }' "$cast"
