@@ -246,9 +246,10 @@ TEST(OpGenerator, AllTypesIncludePostOnlyOrdersThatWouldCross) {
   EXPECT_GT(crossing, 0U);
 }
 
-// A FOK or PostOnly order never rests, so the generator's own book view must
-// not grow from one. With unknown-id picks disabled, a cancel can only fall
-// back to a synthetic unknown id when the model holds no live order at all.
+// The generator's model only tracks orders it expects to rest, and it treats
+// FOK and PostOnly as non-resting: the model is a targeting heuristic, not a
+// second engine. With unknown-id picks disabled, a cancel can only fall back
+// to a synthetic unknown id when the model holds no live order at all.
 TEST(OpGenerator, PhaseTwoSubmitsDoNotEnterTheModelledBook) {
   OpMix mix;
   mix.submit_weight = 1;
@@ -256,7 +257,7 @@ TEST(OpGenerator, PhaseTwoSubmitsDoNotEnterTheModelledBook) {
   mix.modify_weight = 0;
   mix.market_weight = 0;
   mix.ioc_weight = 0;
-  mix.fok_weight = 100;  // every submit is an unsupported type
+  mix.fok_weight = 100;  // every submit is a FOK
   mix.duplicate_id_weight = 0;
   mix.reuse_id_weight = 0;
   mix.unknown_id_weight = 0;
