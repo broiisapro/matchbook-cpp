@@ -125,8 +125,12 @@ class ProbeAllocator {
     return static_cast<T*>(::operator new(bytes, std::align_val_t{alignof(T)}));
   }
 
-  void deallocate(T* pointer, std::size_t n) noexcept {
-    ::operator delete(pointer, n * sizeof(T), std::align_val_t{alignof(T)});
+  void deallocate(T* pointer, [[maybe_unused]] std::size_t n) noexcept {
+    // Unsized aligned delete, matching the aligned operator new above. The
+    // sized form (delete(pointer, bytes, align_val_t)) needs
+    // -fsized-deallocation on Linux clang, and deallocation here is a
+    // construction-time path, not a hot one, so the size buys nothing.
+    ::operator delete(pointer, std::align_val_t{alignof(T)});
   }
 
   template <class U>
@@ -165,7 +169,10 @@ class NodePool {
 
   ~NodePool() {
     if (storage_ != nullptr) {
-      ::operator delete(storage_, node_size_ * capacity_, std::align_val_t{node_align_});
+      // Unsized aligned delete, matching the aligned operator new in the
+      // constructor: the sized form needs -fsized-deallocation on Linux clang
+      // and the pool is destroyed once, not on the hot path.
+      ::operator delete(storage_, std::align_val_t{node_align_});
     }
   }
 
