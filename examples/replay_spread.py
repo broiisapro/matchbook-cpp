@@ -43,9 +43,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def replay_and_sample(
-    flow: Path, every: int
-) -> tuple[list[float], list[int], int, str]:
+def replay_and_sample(flow: Path, every: int) -> tuple[list[float], list[int], int, str]:
     """Replays the flow and returns (x values, spreads, record count, x label).
 
     The x axis is relative time in seconds when the flow carries advancing
