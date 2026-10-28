@@ -21,6 +21,14 @@ OrderBook::OrderBook(const Config& config, Listener& listener)
 void OrderBook::submit(OrderId id, Side side, OrderType type, Price price, Qty qty) {
   assert(!in_callback_ && "reentrancy: a listener callback called back into the book");
 
+  // Validation step 0: the Phase 2 types are part of the frozen contract but
+  // their matching semantics are not implemented yet. Both engines reject them
+  // here, before every other check, so the differential test stays exact
+  // (decision C47).
+  if (type == OrderType::FOK || type == OrderType::PostOnly) {
+    notify_reject(id, RejectReason::UnsupportedOrderType);
+    return;
+  }
   if (qty <= 0) {
     notify_reject(id, RejectReason::InvalidQuantity);
     return;
@@ -109,6 +117,11 @@ void OrderBook::place(OrderId id, Side side, OrderType type, Price price, Qty qt
     case OrderType::IOC:
       remaining = match(id, side, price, remaining, /*market=*/false);
       break;
+    case OrderType::FOK:
+    case OrderType::PostOnly:
+      // Rejected during validation (decision C47); nothing reaches place().
+      assert(false && "FOK and PostOnly are rejected before placing");
+      return;
   }
   if (remaining > 0) {
     notify_cancel(id, remaining);
