@@ -57,19 +57,6 @@ class CountingListener final : public Listener {
   std::vector<Trade> trade_log;
 };
 
-/// How much of the engine is available; the suites skip what it cannot do
-/// rather than measure a path that is not there.
-enum class EngineState {
-  Stub,      ///< submit keeps no state (the Epic 0 stubs)
-  RestOnly,  ///< resting and cancelling work, matching does not
-  Ready,     ///< the full event contract is available
-};
-
-/// Probes the engine once per process: a limit buy at the price floor must
-/// rest, then a crossing pair at the same price must trade down to an empty
-/// book. Cached after the first call.
-EngineState engine_state();
-
 /// Number of sanity checks that failed so far across all benchmarks.
 int harness_failures();
 
