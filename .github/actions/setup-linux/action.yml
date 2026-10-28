@@ -46,6 +46,28 @@ runs:
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends "${missing[@]}"
 
+    - name: Install CMake
+      shell: bash
+      env:
+        # The release the pinned vcpkg downloads for its own port builds.
+        CMAKE_VERSION: 4.4.0
+      run: |
+        set -euo pipefail
+        dest="/opt/cmake-${CMAKE_VERSION}"
+        if [[ ! -x "$dest/bin/cmake" ]]; then
+          # The runner image's CMake is whatever Ubuntu or the image happens to
+          # ship, and vcpkg's port scripts follow the version they were
+          # released with. Installing that version explicitly keeps the outer
+          # configure and the port builds on the same CMake, which is how the
+          # Docker image already behaves.
+          curl -fsSL -o /tmp/cmake.tar.gz \
+            "https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-aarch64.tar.gz"
+          sudo mkdir -p "$dest"
+          sudo tar -xzf /tmp/cmake.tar.gz --strip-components=1 -C "$dest"
+          rm -f /tmp/cmake.tar.gz
+        fi
+        echo "$dest/bin" >> "$GITHUB_PATH"
+
     - name: Ensure uv
       id: uv
       shell: bash

@@ -114,6 +114,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-linux
+      - name: Print the toolchain
+        run: |
+          cmake --version | sed -n 1p
+          clang++ --version | sed -n 1p
+          ninja --version
+          "$VCPKG_ROOT/vcpkg" version | sed -n 1p
       - name: Configure (linux-release)
         run: cmake --preset linux-release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       # The benchmark binary and the SPSC latency harness include the macOS
