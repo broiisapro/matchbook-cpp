@@ -312,19 +312,10 @@ void report_latency(benchmark::State& state, const LatencyRecorder& recorder) {
                           recorder.ops_per_sample());
 }
 
-/// Common front matter: skip what the engine cannot do yet, fail loudly when a
-/// sanity check does not hold.
-bool setup_or_skip(benchmark::State& state, bool needs_matching,
-                   const std::string& sanity_problem) {
-  const EngineState engine = engine_state();
-  if (engine == EngineState::Stub) {
-    state.SkipWithMessage("engine not implemented");
-    return false;
-  }
-  if (needs_matching && engine != EngineState::Ready) {
-    state.SkipWithMessage("engine not implemented: matching");
-    return false;
-  }
+/// Common front matter: fail the benchmark loudly when its setup-time sanity
+/// check does not hold, so a benchmark cannot silently stop exercising the
+/// path it is named after.
+bool setup_or_fail(benchmark::State& state, const std::string& sanity_problem) {
   if (!sanity_problem.empty()) {
     note_harness_failure();
     state.SkipWithError("sanity check failed: " + sanity_problem);
@@ -334,7 +325,7 @@ bool setup_or_skip(benchmark::State& state, bool needs_matching,
 }
 
 void AddOrder_NonCrossing(benchmark::State& state) {
-  if (!setup_or_skip(state, /*needs_matching=*/false, sanity_add_non_crossing())) {
+  if (!setup_or_fail(state, sanity_add_non_crossing())) {
     return;
   }
   NullListener listener;
@@ -353,7 +344,7 @@ void AddOrder_NonCrossing(benchmark::State& state) {
 
 void crossing(benchmark::State& state, bool market) {
   const int levels = static_cast<int>(state.range(0));
-  if (!setup_or_skip(state, /*needs_matching=*/true, sanity_crossing(levels, market))) {
+  if (!setup_or_fail(state, sanity_crossing(levels, market))) {
     return;
   }
   NullListener listener;
@@ -375,7 +366,7 @@ void AddOrder_Crossing(benchmark::State& state) { crossing(state, false); }
 void Market_Sweep(benchmark::State& state) { crossing(state, true); }
 
 void Cancel_Resting(benchmark::State& state) {
-  if (!setup_or_skip(state, /*needs_matching=*/false, sanity_cancel())) {
+  if (!setup_or_fail(state, sanity_cancel())) {
     return;
   }
   NullListener listener;
@@ -393,7 +384,7 @@ void Cancel_Resting(benchmark::State& state) {
 }
 
 void MixedFlow(benchmark::State& state) {
-  if (!setup_or_skip(state, /*needs_matching=*/true, sanity_mixed_flow())) {
+  if (!setup_or_fail(state, sanity_mixed_flow())) {
     return;
   }
   NullListener listener;
