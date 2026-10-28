@@ -12,9 +12,14 @@ pylob = { workspace = true }
 
 [dependency-groups]
 dev = ["pytest>=8.3"]
+# Optional plotting stack for examples/; installed by default in the repository
+# environment so the examples run with a plain `uv run`, but never a dependency
+# of the pylob package itself.
+plot = ["matplotlib>=3.11"]
 
 [tool.uv]
 package = false
+default-groups = ["dev", "plot"]
 
 [tool.uv.workspace]
 members = ["python/pylob"]
