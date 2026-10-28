@@ -3,10 +3,18 @@ name = "matchbook-cpp-scripts"
 version = "0.1.0"
 description = "Benchmark reporting and fixture tooling for matchbook-cpp"
 requires-python = ">=3.12"
-dependencies = []
+# The repository environment includes the bindings so examples/ and the
+# binding tests run with a plain `uv run` from the repo root.
+dependencies = ["pylob"]
+
+[tool.uv.sources]
+pylob = { workspace = true }
 
 [dependency-groups]
 dev = ["pytest>=8.3"]
 
 [tool.uv]
 package = false
+
+[tool.uv.workspace]
+members = ["python/pylob"]
