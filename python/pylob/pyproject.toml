@@ -1,0 +1,27 @@
+[build-system]
+# scikit-build-core drives CMake; pybind11 supplies both the C++ headers and
+# its CMake config inside the isolated build environment.
+requires = ["scikit-build-core>=0.11", "pybind11>=2.13"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "pylob"
+version = "0.1.0"
+description = "Python bindings for the matchbook-cpp limit order book and matching engine"
+requires-python = ">=3.12"
+license = "MIT"
+dependencies = []
+
+[project.urls]
+# Local workspace member: built from a checkout of the repository, not
+# published on its own. The CMake project compiles the engine sources from
+# ../../src and ../../tools/flowfile, so a standalone sdist would be incomplete.
+Homepage = "https://github.com/broiisapro/matchbook-cpp"
+
+[tool.scikit-build]
+minimum-version = "0.11"
+cmake.version = ">=3.28"
+wheel.packages = ["src/pylob"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
