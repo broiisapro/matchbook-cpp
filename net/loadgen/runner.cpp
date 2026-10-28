@@ -223,6 +223,18 @@ RunResult LoadRunner::run() {
     return session->transport->fd() >= 0;
   });
 
+  // select() cannot wait on a descriptor at or above FD_SETSIZE; fail before
+  // any request is sent rather than part way through a run.
+  const bool too_many_fds =
+      std::any_of(sessions_.begin(), sessions_.end(),
+                  [](const auto& session) { return session->transport->fd() >= FD_SETSIZE; });
+  if (too_many_fds) {
+    RunResult result;
+    result.stats = stats_;
+    result.error = "too many sessions for select()";
+    return result;
+  }
+
   const auto any_pending = [this]() {
     return std::any_of(sessions_.begin(), sessions_.end(),
                        [](const auto& session) { return session->pending.has_value(); });

@@ -1,6 +1,7 @@
 #include "net/loadgen/endpoint.hpp"
 
 #include <charconv>
+#include <utility>
 
 namespace lob::loadgen {
 namespace {
