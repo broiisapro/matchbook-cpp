@@ -169,6 +169,18 @@ std::optional<DecodedFrame> next_frame(WireClient& client, int timeout_ms = 1000
   return DecodedFrame{header.type, header.seq, std::move(*bytes)};
 }
 
+/// Next market-data frame that carries an event. Idle heartbeats are skipped:
+/// they repeat the last published sequence number and never advance the stream,
+/// so a test that is about events should not have to know when one lands.
+std::optional<DecodedFrame> next_event_frame(WireClient& client, int timeout_ms = 10000) {
+  for (;;) {
+    std::optional<DecodedFrame> frame = next_frame(client, timeout_ms);
+    if (!frame || frame->type != proto::MessageType::Heartbeat) {
+      return frame;
+    }
+  }
+}
+
 template <class Message>
 std::optional<Message> next_message(WireClient& client, proto::MessageType expected,
                                     int timeout_ms = 10000) {
@@ -268,7 +280,7 @@ TEST_F(GatewayMarketDataTest, SequenceIsContiguousAcrossOneHundredThousandEvents
     }
     std::uint64_t expected = 1;
     for (std::uint64_t i = 0; i < kOrders; ++i) {
-      const std::optional<DecodedFrame> frame = next_frame(md, 20000);
+      const std::optional<DecodedFrame> frame = next_event_frame(md, 20000);
       if (!frame) {
         reader_failed = true;
         return;
@@ -330,7 +342,7 @@ TEST_F(GatewayMarketDataTest, LateSubscriberStartsAtTheCurrentSequence) {
   ASSERT_TRUE(wait_until([&] { return gateway_->md_sequence_forwarded() == 15; }));
 
   for (proto::Seq expected = 11; expected <= 15; ++expected) {
-    const std::optional<DecodedFrame> frame = next_frame(md);
+    const std::optional<DecodedFrame> frame = next_event_frame(md);
     ASSERT_TRUE(frame.has_value());
     EXPECT_EQ(frame->seq, expected);
     EXPECT_EQ(frame->type, proto::MessageType::BookUpdate);
@@ -356,7 +368,7 @@ TEST_F(GatewayMarketDataTest, EverySubscriberSeesTradesAndBookUpdatesInOrder) {
   ASSERT_TRUE(wait_until([&] { return gateway_->md_sequence_forwarded() == 3; }));
 
   for (WireClient* subscriber : {&first, &second}) {
-    const std::optional<DecodedFrame> update_before = next_frame(*subscriber);
+    const std::optional<DecodedFrame> update_before = next_event_frame(*subscriber);
     ASSERT_TRUE(update_before.has_value());
     EXPECT_EQ(update_before->seq, 1u);
     EXPECT_EQ(update_before->type, proto::MessageType::BookUpdate);
@@ -366,7 +378,7 @@ TEST_F(GatewayMarketDataTest, EverySubscriberSeesTradesAndBookUpdatesInOrder) {
     EXPECT_EQ(before->price, 100);
     EXPECT_EQ(before->qty, 5);
 
-    const std::optional<DecodedFrame> trade_frame = next_frame(*subscriber);
+    const std::optional<DecodedFrame> trade_frame = next_event_frame(*subscriber);
     ASSERT_TRUE(trade_frame.has_value());
     EXPECT_EQ(trade_frame->seq, 2u);
     EXPECT_EQ(trade_frame->type, proto::MessageType::Trade);
@@ -378,7 +390,7 @@ TEST_F(GatewayMarketDataTest, EverySubscriberSeesTradesAndBookUpdatesInOrder) {
     EXPECT_EQ(trade->price, 100);
     EXPECT_EQ(trade->qty, 5);
 
-    const std::optional<DecodedFrame> update_after = next_frame(*subscriber);
+    const std::optional<DecodedFrame> update_after = next_event_frame(*subscriber);
     ASSERT_TRUE(update_after.has_value());
     EXPECT_EQ(update_after->seq, 3u);
     EXPECT_EQ(update_after->type, proto::MessageType::BookUpdate);
@@ -417,6 +429,57 @@ TEST_F(GatewayMarketDataTest, StalledSubscriberIsDroppedWithoutAffectingOrderEnt
   // The engine and the surviving order-entry session are unaffected.
   ASSERT_TRUE(entry.submit(kOrders + 1, lob::Side::Buy, 500, 1));
   EXPECT_TRUE(entry.read_ack());
+}
+
+TEST_F(GatewayMarketDataTest, IdleStreamEmitsHeartbeatsThatRepeatTheLastSequence) {
+  WireClient md(md_port());
+  ASSERT_TRUE(md.connected());
+  ASSERT_TRUE(wait_until([&] { return gateway_->subscriber_count() == 1; }));
+
+  Entry entry(entry_port());
+  ASSERT_TRUE(entry.client().connected());
+  ASSERT_TRUE(entry.submit(1, lob::Side::Buy, 100, 5));
+  ASSERT_TRUE(entry.read_ack());
+
+  const std::optional<DecodedFrame> update = next_frame(md);
+  ASSERT_TRUE(update.has_value());
+  EXPECT_EQ(update->type, proto::MessageType::BookUpdate);
+  EXPECT_EQ(update->seq, 1u);
+
+  // The stream is now idle. After the configured interval the gateway must
+  // emit a heartbeat that repeats sequence 1 rather than consuming sequence 2.
+  const std::optional<DecodedFrame> beat = next_frame(md, 2000);
+  ASSERT_TRUE(beat.has_value());
+  EXPECT_EQ(beat->type, proto::MessageType::Heartbeat);
+  EXPECT_EQ(beat->seq, 1u);
+  const std::optional<proto::Heartbeat> decoded = decode_as<proto::Heartbeat>(*beat);
+  ASSERT_TRUE(decoded.has_value());
+  EXPECT_EQ(decoded->nonce, 0u);
+  EXPECT_EQ(gateway_->md_sequence_published(), 1u);
+  EXPECT_EQ(gateway_->md_sequence_forwarded(), 1u);
+
+  // Idle heartbeats never take a sequence number: the next real event is 2,
+  // and any heartbeat still in flight repeats 1.
+  ASSERT_TRUE(entry.submit(2, lob::Side::Buy, 101, 3));
+  ASSERT_TRUE(entry.read_ack());
+  const std::optional<DecodedFrame> next_update = next_event_frame(md, 2000);
+  ASSERT_TRUE(next_update.has_value());
+  EXPECT_EQ(next_update->type, proto::MessageType::BookUpdate);
+  EXPECT_EQ(next_update->seq, 2u);
+  EXPECT_EQ(gateway_->md_sequence_published(), 2u);
+}
+
+TEST_F(GatewayMarketDataTest, NoHeartbeatBeforeTheFirstEvent) {
+  // A heartbeat needs a published sequence number to repeat. With no traffic
+  // there is nothing to say, so an idle gateway stays silent (documented
+  // choice: seq 0 heartbeats are not emitted).
+  WireClient md(md_port());
+  ASSERT_TRUE(md.connected());
+  ASSERT_TRUE(wait_until([&] { return gateway_->subscriber_count() == 1; }));
+
+  EXPECT_FALSE(next_frame(md, 300).has_value());
+  EXPECT_FALSE(md.eof());
+  EXPECT_EQ(gateway_->md_sequence_published(), 0u);
 }
 
 }  // namespace

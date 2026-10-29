@@ -56,6 +56,15 @@ std::vector<std::vector<std::byte>> make_stream(proto::Seq first, proto::Seq las
   return frames;
 }
 
+/// Idle heartbeat repeating the last published sequence number.
+std::vector<std::byte> make_heartbeat(proto::Seq seq) {
+  std::array<std::byte, proto::Heartbeat::kWireSize> buffer{};
+  const std::size_t written = proto::encode(proto::Heartbeat{0}, seq, buffer);
+  EXPECT_GT(written, 0U);
+  return std::vector<std::byte>(buffer.begin(),
+                                buffer.begin() + static_cast<std::ptrdiff_t>(written));
+}
+
 std::vector<std::byte> concatenate(const std::vector<std::vector<std::byte>>& frames) {
   std::vector<std::byte> bytes;
   for (const std::vector<std::byte>& frame : frames) {
@@ -469,6 +478,46 @@ TEST(PublisherDelivery, ReconnectsToTheGatewayWithBackoff) {
   expected.insert(expected.end(), second_batch.begin(), second_batch.end());
   expect_frames(receiver.frames(), expected);
   EXPECT_GE(publisher.stats().gateway_connections, 2U);
+}
+
+TEST(PublisherDelivery, ForwardsHeartbeatsWithoutRetainingThem) {
+  UdpReceiver receiver;
+  FakeGateway gateway;
+  const std::vector<UdpReceiver*> receivers{&receiver};
+
+  pub::Publisher publisher(make_config(gateway, receivers));
+  std::string error;
+  ASSERT_TRUE(publisher.open(error)) << error;
+
+  ASSERT_TRUE(
+      drive_with_receivers(publisher, receivers, [&] { return gateway.connections() >= 1; }));
+
+  const std::vector<std::vector<std::byte>> events = make_stream(1, 5);
+  std::vector<std::byte> heartbeat = make_heartbeat(5);
+  std::vector<std::vector<std::byte>> stream = events;
+  stream.push_back(heartbeat);
+  gateway.send_bytes(concatenate(stream));
+
+  ASSERT_TRUE(drive_with_receivers(publisher, receivers,
+                                   [&] { return receiver.frames().size() >= stream.size(); }));
+
+  // The heartbeat reaches every subscriber in stream order...
+  expect_frames(receiver.frames(), stream);
+  EXPECT_EQ(publisher.stats().messages_published, events.size());
+  EXPECT_EQ(publisher.stats().heartbeats_forwarded, 1U);
+
+  // ...but is not retained: asking for its sequence number replays the event
+  // it repeats, not the heartbeat.
+  RecoveryClient client;
+  ASSERT_TRUE(client.connect_to(publisher.recovery_port()));
+  ASSERT_TRUE(client.send_request(5, 5, 1));
+  ASSERT_TRUE(drive_recovery(publisher, client, [&] { return client.frames().size() >= 1; }));
+  ASSERT_EQ(client.frames().size(), 1U);
+  EXPECT_EQ(client.frames()[0], events.back());
+  proto::Header header;
+  ASSERT_EQ(proto::decode_header(client.frames()[0], header), proto::DecodeStatus::Ok);
+  EXPECT_EQ(header.type, proto::MessageType::BookUpdate);
+  EXPECT_EQ(publisher.stats().sequence_resets, 0U);
 }
 
 TEST(PublisherRecovery, RecoversAMidStreamGap) {

@@ -55,6 +55,11 @@ inline std::vector<std::byte> trade(OrderId maker, OrderId taker, Price price, Q
   return encode_frame(net::Trade{maker, taker, price, qty}, seq);
 }
 
+/// Idle heartbeat that repeats `seq`, the last published sequence number.
+inline std::vector<std::byte> heartbeat(net::Seq seq, std::uint64_t nonce = 0) {
+  return encode_frame(net::Heartbeat{nonce}, seq);
+}
+
 class FakePublisher {
  public:
   FakePublisher() {

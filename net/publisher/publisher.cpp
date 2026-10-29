@@ -21,6 +21,7 @@ using net::DecodeStatus;
 using net::encode;
 using net::FramerResult;
 using net::Header;
+using net::MessageType;
 using net::PushResult;
 using net::RecoveryRequest;
 using net::SequenceReset;
@@ -303,8 +304,17 @@ bool Publisher::on_gateway_frame(std::span<const std::byte> frame) {
     return true;
   }
 
-  store_.append(header.seq, frame);
-  ++stats_.messages_published;
+  // A heartbeat repeats the sequence number of the last real event, so it is
+  // forwarded like any other frame but never enters the retransmit ring: the
+  // ring already holds the event it points at, and storing a duplicate (or, if
+  // that event has aged out, a stale number) would corrupt the recovery view
+  // of the stream.
+  if (header.type == MessageType::Heartbeat) {
+    ++stats_.heartbeats_forwarded;
+  } else {
+    store_.append(header.seq, frame);
+    ++stats_.messages_published;
+  }
 
   if (!packer_.add(frame)) {
     flush_datagrams();

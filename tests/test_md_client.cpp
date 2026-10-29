@@ -245,6 +245,74 @@ TEST(md_client_feed_handler, RecoveryAnswersWithAResetWhenFramesAreGone) {
   EXPECT_EQ(handler->book().quantity_at(lob::Side::Buy, 99), std::optional<lob::Qty>(2));
 }
 
+TEST(md_client_feed_handler, TrailingGapOpenedByAHeartbeatIsRecovered) {
+  md::testing::FakePublisher publisher;
+  auto handler = make_handler(publisher);
+  ASSERT_NE(handler, nullptr);
+
+  const Frames stream{
+      book_update(100, 10, lob::Side::Buy, 1),
+      book_update(101, 5, lob::Side::Buy, 2),
+      book_update(102, 4, lob::Side::Sell, 3),
+      book_update(103, 2, lob::Side::Sell, 4),
+  };
+  publisher.store_frames(stream);
+
+  // The final datagram is lost and no later event ever arrives: only the
+  // trailing heartbeat can reveal that sequence 4 was published.
+  publisher.send_frames(handler->udp_port(), {stream[0], stream[1], stream[2]});
+  ASSERT_TRUE(poll_until(*handler, [&] { return handler->last_seen_seq() == 3; }));
+  EXPECT_EQ(handler->highest_known_seq(), 3U);
+  EXPECT_EQ(handler->counters().gaps_detected, 0U);
+
+  publisher.send_frames(handler->udp_port(), {md::testing::heartbeat(4)});
+  ASSERT_TRUE(poll_until(*handler, [&] { return handler->last_seen_seq() == 4; }));
+
+  const md::FeedCounters& counters = handler->counters();
+  EXPECT_EQ(counters.heartbeats, 1U);
+  EXPECT_EQ(counters.gaps_detected, 1U);
+  EXPECT_EQ(counters.gaps_recovered, 1U);
+  EXPECT_GE(counters.recovery_requests, 1U);
+  EXPECT_EQ(handler->highest_known_seq(), 4U);
+  EXPECT_EQ(handler->last_seen_seq(), 4U);
+  EXPECT_EQ(handler->expected_seq(), 5U);
+  EXPECT_EQ(handler->buffered(), 0U);
+  // The recovered frame was applied, so the local book has the lost update.
+  EXPECT_EQ(handler->book().quantity_at(lob::Side::Sell, 103), std::optional<lob::Qty>(2));
+}
+
+TEST(md_client_feed_handler, HeartbeatAtTheLastAppliedSequenceIsANoOp) {
+  md::testing::FakePublisher publisher;
+  auto handler = make_handler(publisher);
+  ASSERT_NE(handler, nullptr);
+
+  const Frames stream{
+      book_update(100, 10, lob::Side::Buy, 1),
+      book_update(101, 5, lob::Side::Buy, 2),
+      book_update(102, 4, lob::Side::Sell, 3),
+  };
+  publisher.store_frames(stream);
+  publisher.send_frames(handler->udp_port(), stream);
+  ASSERT_TRUE(poll_until(*handler, [&] { return handler->last_seen_seq() == 3; }));
+
+  // The stream is current: heartbeats repeating 3 (and a stale 1) must not
+  // open a gap, ask for recovery or change the book.
+  publisher.send_frames(handler->udp_port(), {md::testing::heartbeat(3), md::testing::heartbeat(1),
+                                              md::testing::heartbeat(3, 0xABCD)});
+  ASSERT_TRUE(poll_until(*handler, [&] { return handler->counters().heartbeats == 3; }));
+
+  const md::FeedCounters& counters = handler->counters();
+  EXPECT_EQ(counters.gaps_detected, 0U);
+  EXPECT_EQ(counters.gaps_recovered, 0U);
+  EXPECT_EQ(counters.recovery_requests, 0U);
+  EXPECT_EQ(counters.recovery_failures, 0U);
+  EXPECT_EQ(handler->buffered(), 0U);
+  EXPECT_EQ(handler->last_seen_seq(), 3U);
+  EXPECT_EQ(handler->highest_known_seq(), 3U);
+  EXPECT_EQ(handler->book().quantity_at(lob::Side::Buy, 100), std::optional<lob::Qty>(10));
+  EXPECT_EQ(handler->book().quantity_at(lob::Side::Sell, 102), std::optional<lob::Qty>(4));
+}
+
 TEST(md_client_feed_handler, MalformedDatagramIsCountedAndIgnored) {
   md::testing::FakePublisher publisher;
   auto handler = make_handler(publisher, /*auto_recovery=*/false);

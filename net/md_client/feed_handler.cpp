@@ -333,14 +333,40 @@ void FeedHandler::handle_frame(std::span<const std::byte> frame) {
       }
       return;
     }
+    case net::MessageType::Heartbeat: {
+      net::Heartbeat heartbeat;
+      net::Seq seq = 0;
+      if (net::decode(frame, heartbeat, seq) != net::DecodeStatus::Ok) {
+        ++counters_.malformed;
+        return;
+      }
+      ++counters_.heartbeats;
+      // A heartbeat repeats the last published sequence number; it carries no
+      // event, so it never touches the book. Above the last applied number it
+      // proves that everything between was published and did not arrive, which
+      // is exactly the trailing gap a lost final datagram leaves behind.
+      const net::Seq carried = header.seq;
+      if (carried > highest_known_seq_) {
+        highest_known_seq_ = carried;
+      }
+      if (carried >= expected_seq_ && !gap_open_) {
+        gap_open_ = true;
+        ++counters_.gaps_detected;
+      }
+      return;
+    }
     default:
-      // The event stream carries BookUpdate, Trade and SequenceReset only.
+      // The event stream carries BookUpdate, Trade, SequenceReset and the idle
+      // Heartbeat only.
       ++counters_.malformed;
       return;
   }
 }
 
 void FeedHandler::accept_sequenced(net::Seq seq, std::span<const std::byte> frame) {
+  if (seq > highest_known_seq_) {
+    highest_known_seq_ = seq;
+  }
   if (seq < expected_seq_) {
     ++counters_.duplicates;
     return;
@@ -392,6 +418,12 @@ void FeedHandler::apply_frame_now(std::span<const std::byte> frame) {
 
 void FeedHandler::apply_reset(net::Seq next_seq) {
   expected_seq_ = next_seq;
+  // A reset names the next number the stream will use, so everything below it
+  // is settled (delivered or permanently skipped) and cannot be a gap.
+  const net::Seq settled = next_seq > 0 ? next_seq - 1 : 0;
+  if (settled > highest_known_seq_) {
+    highest_known_seq_ = settled;
+  }
   drain_buffered();
 }
 
@@ -411,24 +443,36 @@ void FeedHandler::drain_buffered() {
   while (!buffered_.empty() && buffered_.begin()->first < expected_seq_) {
     buffered_.erase(buffered_.begin());
   }
-  if (buffered_.empty()) {
+  // A heartbeat can leave a gap with nothing buffered (the missing events never
+  // arrived). That hole stays open until the book catches up with everything
+  // the stream has announced.
+  if (expected_seq_ > highest_known()) {
     gap_open_ = false;
     recovery_retry_in_ = 0;
   }
 }
 
+net::Seq FeedHandler::highest_known() const {
+  net::Seq highest = highest_known_seq_;
+  if (!buffered_.empty() && buffered_.rbegin()->first > highest) {
+    highest = buffered_.rbegin()->first;
+  }
+  return highest;
+}
+
 void FeedHandler::maybe_recover() {
-  if (!config_.auto_recovery || !gap_open_ || buffered_.empty() || recovery_retry_in_ > 0) {
+  if (!config_.auto_recovery || !gap_open_ || recovery_retry_in_ > 0) {
     return;
   }
 
   bool applied = false;
   // A huge hole is recovered in bounded chunks, so one recovery response can
   // never be unbounded. The loop also bounds the synchronous work per
-  // datagram.
-  for (int attempt = 0; attempt < 16 && !buffered_.empty(); ++attempt) {
+  // datagram. The hole may be empty of buffered frames when a heartbeat opened
+  // it, which is why the bound comes from highest_known().
+  for (int attempt = 0; attempt < 16; ++attempt) {
     const net::Seq from = expected_seq_;
-    const net::Seq highest = buffered_.rbegin()->first;
+    const net::Seq highest = highest_known();
     if (highest < from) {
       break;
     }
@@ -447,9 +491,12 @@ void FeedHandler::maybe_recover() {
       recovery_retry_in_ = 64;
       break;
     }
+    if (expected_seq_ > highest_known()) {
+      break;
+    }
   }
 
-  if (applied && buffered_.empty()) {
+  if (applied && expected_seq_ > highest_known()) {
     ++counters_.gaps_recovered;
     gap_open_ = false;
   }

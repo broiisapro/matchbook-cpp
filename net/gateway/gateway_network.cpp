@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -36,6 +37,8 @@ namespace lob::net::detail {
 namespace {
 
 constexpr std::size_t kReadChunk = 8192;
+
+using Clock = std::chrono::steady_clock;
 
 /// Send buffer requested from the kernel on a market-data subscriber socket.
 /// Keeping it small makes the "slow subscriber" bound (kMdOutputLimit) the
@@ -120,6 +123,13 @@ struct NetworkState {
   std::vector<std::unique_ptr<Connection>> connections;
   std::unordered_map<std::uint32_t, Connection*> sessions;
   std::uint32_t next_session = kFirstSessionId;
+
+  /// Last sequence number forwarded on the market-data stream, 0 until the
+  /// first event. Heartbeats repeat it; they never advance it.
+  Seq last_stream_seq = 0;
+  /// When the last sequenced event was forwarded. An idle stream emits a
+  /// Heartbeat after GatewayOptions::md_heartbeat_idle.
+  Clock::time_point last_stream_event = Clock::now();
 
   std::vector<pollfd> poll_fds;
   struct Target {
@@ -522,6 +532,7 @@ void drain_responses(NetworkState& net) {
 
 void drain_md(NetworkState& net) {
   MdFrame message{};
+  bool forwarded_any = false;
   while (net.gateway->md.try_pop(message)) {
     const std::span<const std::byte> frame(message.bytes.data(), message.size);
     for (const auto& connection : net.connections) {
@@ -529,8 +540,56 @@ void drain_md(NetworkState& net) {
         append_stream_frame(net, *connection, frame, kMdOutputLimit);
       }
     }
-    net.gateway->md_forwarded.store(frame_seq(frame), std::memory_order_release);
+    net.last_stream_seq = frame_seq(frame);
+    net.gateway->md_forwarded.store(net.last_stream_seq, std::memory_order_release);
+    forwarded_any = true;
   }
+  if (forwarded_any) {
+    net.last_stream_event = Clock::now();
+  }
+}
+
+/// Emits a Heartbeat when the market-data stream has been idle for the
+/// configured interval (decision C57). The heartbeat repeats the last published
+/// sequence number without consuming one, so a subscriber that lost the final
+/// datagram sees a hole as soon as the next heartbeat arrives.
+///
+/// Nothing is sent before the first sequenced event: with no published
+/// sequence number to repeat, a heartbeat would carry seq 0 and tell a
+/// subscriber nothing, so an idle gateway without traffic stays silent.
+/// Heartbeats are also skipped when no subscriber is connected, since there is
+/// nobody to tell; the next subscriber's first event re-arms the timer.
+void maybe_emit_heartbeat(NetworkState& net) {
+  if (net.last_stream_seq == 0) {
+    return;
+  }
+  if (Clock::now() - net.last_stream_event < net.gateway->options.md_heartbeat_idle) {
+    return;
+  }
+  bool has_subscriber = false;
+  for (const auto& connection : net.connections) {
+    if (connection->kind == ConnKind::Md && !connection->closing) {
+      has_subscriber = true;
+      break;
+    }
+  }
+  if (!has_subscriber) {
+    return;
+  }
+
+  // Nonce 0: a gateway heartbeat is a stream marker, not a client round trip
+  // (the gateway's echo of a client heartbeat carries the client's nonce).
+  const Heartbeat message{0};
+  std::array<std::byte, Heartbeat::kWireSize> buffer{};
+  const std::size_t size = encode(message, net.last_stream_seq, buffer);
+  const std::span<const std::byte> frame(buffer.data(), size);
+  for (const auto& connection : net.connections) {
+    if (connection->kind == ConnKind::Md && !connection->closing) {
+      append_stream_frame(net, *connection, frame, kMdOutputLimit);
+    }
+  }
+  // One heartbeat per idle interval, not one per poll iteration.
+  net.last_stream_event = Clock::now();
 }
 
 void reap_connections(NetworkState& net) {
@@ -593,6 +652,7 @@ void GatewayState::run_network() {
       }
     }
     drain_md(net);
+    maybe_emit_heartbeat(net);
     drain_responses(net);
 
     if (stopping && engine_done.load(std::memory_order_acquire) && md.size_approx() == 0 &&

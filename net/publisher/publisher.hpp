@@ -3,11 +3,13 @@
 // UDP market-data publisher with a TCP recovery service.
 //
 // One Publisher runs one single-threaded poll loop: it connects to the
-// gateway's event stream, reads protocol frames, stores each one in a
-// preallocated retransmit ring, packs them into UDP datagrams and sends every
-// datagram to every destination. The same loop accepts recovery clients on
-// TCP, so a recovery response never blocks live publishing and several
-// subscribers can recover at once.
+// gateway's event stream, reads protocol frames, stores each sequenced event in
+// a preallocated retransmit ring, packs them into UDP datagrams and sends every
+// datagram to every destination. Idle heartbeats are forwarded like any other
+// frame but are never retained, because they repeat an event's sequence number
+// rather than carrying an event of their own. The same loop accepts recovery
+// clients on TCP, so a recovery response never blocks live publishing and
+// several subscribers can recover at once.
 //
 // The loop is exposed one step at a time (poll_once) so tests can drive it
 // deterministically against an in-process fake gateway and loopback receivers.
@@ -56,6 +58,7 @@ struct PublisherConfig {
 
 struct PublisherStats {
   std::uint64_t messages_published = 0;
+  std::uint64_t heartbeats_forwarded = 0;
   std::uint64_t datagrams_sent = 0;
   std::uint64_t send_failures = 0;
   std::uint64_t oversized_frames = 0;
