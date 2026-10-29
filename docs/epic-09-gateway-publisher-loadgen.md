@@ -284,6 +284,10 @@ one request in flight per session means a slow response delays the next request
 instead of queueing behind it, so these are an interactive client's steady-state
 numbers and not a service time under load.
 
+The ring half of the same run is published in the README's concurrency section
+and in the Epic 04 write-up; its numbers describe the handoff the gateway's two
+threads perform, without the sockets this table includes.
+
 ### The wiring test
 
 The four executables are also tested together, not only as libraries. The
