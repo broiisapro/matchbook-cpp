@@ -274,9 +274,9 @@ TEST(LoadgenReport, WritesTheDocumentedSchema) {
   EXPECT_NE(json.find("\"orders_without_response\": 0"), std::string::npos);
   EXPECT_NE(json.find("\"complete\": true"), std::string::npos);
   EXPECT_NE(json.find("\"error\": \"\""), std::string::npos);
-  EXPECT_NE(json.find("\"latency_ns\": {\"count\": 4, \"p50\": 1000, \"p90\": 2000"),
+  EXPECT_NE(json.find("\"latency_ns\": {\"count\": 4, \"p50_ns\": 1000, \"p90_ns\": 2000"),
             std::string::npos);
-  EXPECT_NE(json.find("\"p99_9\": 4000, \"max\": 4000"), std::string::npos);
+  EXPECT_NE(json.find("\"p999_ns\": 4000, \"max_ns\": 4000"), std::string::npos);
   EXPECT_NE(json.find("\"latency_clamped_samples\": 0"), std::string::npos);
   EXPECT_NE(json.find("\"first_response_by_type\": {\"ack\": 2, \"reject\": 1, \"fill\": 0"),
             std::string::npos);
@@ -314,7 +314,7 @@ TEST(LoadgenReport, EscapesStringsAndIgnoresNonFiniteNumbers) {
   EXPECT_NE(json.find("\"gateway\": \"host\\\"with\\\\quote\""), std::string::npos);
   EXPECT_NE(json.find("\"line\\nbreak\\ttab\""), std::string::npos);
   EXPECT_NE(json.find("\"elapsed_seconds\": null"), std::string::npos);
-  EXPECT_NE(json.find("\"mean\": null"), std::string::npos);
+  EXPECT_NE(json.find("\"mean_ns\": null"), std::string::npos);
 }
 
 /// Loopback TCP server that speaks the wire protocol and answers every request

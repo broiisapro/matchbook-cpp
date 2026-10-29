@@ -54,9 +54,10 @@ void write_double(std::ostream& out, double value) {
 }
 
 void write_latency(std::ostream& out, const LatencySummary& latency) {
-  out << "{\"count\": " << latency.count << ", \"p50\": " << latency.p50_ns
-      << ", \"p90\": " << latency.p90_ns << ", \"p99\": " << latency.p99_ns
-      << ", \"p99_9\": " << latency.p999_ns << ", \"max\": " << latency.max_ns << ", \"mean\": ";
+  out << "{\"count\": " << latency.count << ", \"p50_ns\": " << latency.p50_ns
+      << ", \"p90_ns\": " << latency.p90_ns << ", \"p99_ns\": " << latency.p99_ns
+      << ", \"p999_ns\": " << latency.p999_ns << ", \"max_ns\": " << latency.max_ns
+      << ", \"mean_ns\": ";
   write_double(out, latency.mean_ns);
   out << '}';
 }
