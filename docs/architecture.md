@@ -127,7 +127,7 @@ Record, 40 bytes, little-endian:
 |---|---|---|---|
 | 0 | op | u8 | 1 submit, 2 cancel, 3 modify |
 | 1 | side | u8 | 0 buy, 1 sell (ignored for cancel/modify) |
-| 2 | type | u8 | 0 limit, 1 market, 2 IOC (submit only) |
+| 2 | type | u8 | 0 limit, 1 market, 2 IOC, 3 FOK, 4 PostOnly (submit only) |
 | 3 | reserved | u8[5] | zero |
 | 8 | id | u64 | |
 | 16 | price | i64 | ticks; 0 for market/cancel |

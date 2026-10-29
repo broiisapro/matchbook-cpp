@@ -40,6 +40,8 @@ constexpr std::string_view kUsage =
     "\n"
     "options:\n"
     "  --csv               write the CSV form instead of the binary form\n"
+    "  --types T           basic | all (default basic); all adds FOK and PostOnly\n"
+    "                      submits at 5% each on top of the market/IOC ratios\n"
     "  --cancel-ratio R    cancels per submit, in [0,1] (default 0.10)\n"
     "  --modify-ratio R    modifies per submit, in [0,1] (default 0.10)\n"
     "  --market-ratio R    market orders per submit, in [0,1] (default 0.00)\n"
@@ -49,11 +51,21 @@ constexpr std::string_view kUsage =
 
 constexpr std::uint64_t kMeanInterArrivalNs = 1'000'000;
 
+/// Extra submit types in the all-types flow are fixed so the default (basic)
+/// flow stays byte-identical for a seed. FOK and PostOnly each take 5 % of
+/// submits; the two draws come from the same roll as market/IOC, so basic mode
+/// does not consume any extra randomness.
+constexpr double kFokRatio = 0.05;
+constexpr double kPostOnlyRatio = 0.05;
+
+enum class GenTypes { Basic, All };
+
 struct GenOptions {
   std::uint64_t orders = 0;
   std::uint64_t seed = 0;
   std::string out;
   bool csv = false;
+  GenTypes types = GenTypes::Basic;
   double cancel_ratio = 0.10;
   double modify_ratio = 0.10;
   double market_ratio = 0.0;
@@ -127,6 +139,16 @@ bool parse_args(int argc, char** argv, GenOptions& options) {
     } else if (flag == "--out") {
       options.out = std::string(value);
       have_out = true;
+    } else if (flag == "--types") {
+      if (value == "basic") {
+        options.types = GenTypes::Basic;
+      } else if (value == "all") {
+        options.types = GenTypes::All;
+      } else {
+        std::fprintf(stderr, "gen: --types must be basic or all, got '%s'\n",
+                     std::string(value).c_str());
+        return false;
+      }
     } else if (flag == "--cancel-ratio") {
       if (!parse_ratio(value, options.cancel_ratio)) {
         std::fprintf(stderr, "gen: --cancel-ratio needs a number in [0,1], got '%s'\n",
@@ -181,8 +203,10 @@ bool parse_args(int argc, char** argv, GenOptions& options) {
     std::fputs("gen: --out is required\n", stderr);
     return false;
   }
-  if (options.market_ratio + options.ioc_ratio > 1.0) {
-    std::fputs("gen: --market-ratio + --ioc-ratio must be <= 1\n", stderr);
+  const double fok_ratio = options.types == GenTypes::All ? kFokRatio : 0.0;
+  const double post_only_ratio = options.types == GenTypes::All ? kPostOnlyRatio : 0.0;
+  if (options.market_ratio + options.ioc_ratio + fok_ratio + post_only_ratio > 1.0) {
+    std::fputs("gen: --market-ratio + --ioc-ratio + the all-types shares must be <= 1\n", stderr);
     return false;
   }
   return true;
@@ -228,6 +252,8 @@ int run_gen(int argc, char** argv) {
 
   std::uint64_t ts_ns = 0;
   OrderId next_id = 1;
+  const double fok_ratio = options.types == GenTypes::All ? kFokRatio : 0.0;
+  const double post_only_ratio = options.types == GenTypes::All ? kPostOnlyRatio : 0.0;
   for (std::uint64_t i = 0; i < options.orders; ++i) {
     ts_ns += next_interval_ns(rng);
 
@@ -238,10 +264,18 @@ int run_gen(int argc, char** argv) {
 
     const double type_draw = uniform01(rng);
     OrderType type = OrderType::Limit;
-    if (type_draw < options.market_ratio) {
+    const double market_limit = options.market_ratio;
+    const double ioc_limit = market_limit + options.ioc_ratio;
+    const double fok_limit = ioc_limit + fok_ratio;
+    const double post_only_limit = fok_limit + post_only_ratio;
+    if (type_draw < market_limit) {
       type = OrderType::Market;
-    } else if (type_draw < options.market_ratio + options.ioc_ratio) {
+    } else if (type_draw < ioc_limit) {
       type = OrderType::IOC;
+    } else if (type_draw < fok_limit) {
+      type = OrderType::FOK;
+    } else if (type_draw < post_only_limit) {
+      type = OrderType::PostOnly;
     }
 
     Price price = 0;

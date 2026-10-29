@@ -31,8 +31,9 @@ constexpr std::string_view kUsage =
     "usage: lobsim replay F --engine fast|reference [options]\n"
     "\n"
     "Replays a flow file (binary, or CSV when F ends in .csv) against one\n"
-    "engine and prints a key: value summary. Exit codes: 0 success, 2 usage\n"
-    "error, 1 input or output failure.\n"
+    "engine and prints a key: value summary, including the submit count per\n"
+    "order type. Exit codes: 0 success, 2 usage error, 1 input or output\n"
+    "failure.\n"
     "\n"
     "required:\n"
     "  F                   flow file to replay\n"
@@ -59,6 +60,11 @@ struct Summary {
   std::uint64_t submits = 0;
   std::uint64_t cancels = 0;
   std::uint64_t modifies = 0;
+  std::uint64_t limit_submits = 0;
+  std::uint64_t market_submits = 0;
+  std::uint64_t ioc_submits = 0;
+  std::uint64_t fok_submits = 0;
+  std::uint64_t post_only_submits = 0;
 };
 
 bool parse_u64(std::string_view text, std::uint64_t& out) {
@@ -218,6 +224,23 @@ int replay_with(const ReplayOptions& options) {
     switch (record.op) {
       case FlowOp::Submit:
         ++summary.submits;
+        switch (record.type) {
+          case OrderType::Limit:
+            ++summary.limit_submits;
+            break;
+          case OrderType::Market:
+            ++summary.market_submits;
+            break;
+          case OrderType::IOC:
+            ++summary.ioc_submits;
+            break;
+          case OrderType::FOK:
+            ++summary.fok_submits;
+            break;
+          case OrderType::PostOnly:
+            ++summary.post_only_submits;
+            break;
+        }
         book.submit(record.id, record.side, record.type, record.price, record.qty);
         break;
       case FlowOp::Cancel:
@@ -265,6 +288,10 @@ int replay_with(const ReplayOptions& options) {
   std::printf("submits: %" PRIu64 "\n", summary.submits);
   std::printf("cancels: %" PRIu64 "\n", summary.cancels);
   std::printf("modifies: %" PRIu64 "\n", summary.modifies);
+  std::printf("types: limit=%" PRIu64 " market=%" PRIu64 " ioc=%" PRIu64 " fok=%" PRIu64
+              " post_only=%" PRIu64 "\n",
+              summary.limit_submits, summary.market_submits, summary.ioc_submits,
+              summary.fok_submits, summary.post_only_submits);
   std::printf("accepts: %" PRIu64 "\n", listener.accepts());
   std::printf("rejects: %" PRIu64 "\n", listener.rejects());
   std::printf("trades: %" PRIu64 "\n", listener.trades());

@@ -73,7 +73,7 @@ std::vector<FlowRecord> random_records(std::size_t count, std::uint64_t seed) {
   for (std::size_t i = 0; i < count; ++i) {
     const auto op = static_cast<FlowOp>(1 + rng.below(3));
     const auto side = static_cast<lob::Side>(rng.below(2));
-    const auto type = static_cast<lob::OrderType>(rng.below(3));
+    const auto type = static_cast<lob::OrderType>(rng.below(5));
     const auto id = rng.next();
     const auto price = static_cast<lob::Price>(rng.next() % 2001) - 1000;
     const auto qty = static_cast<lob::Qty>(rng.next() % 1000) + 1;
@@ -369,6 +369,25 @@ TEST(Flowfile, InvalidSideAndTypeBytesAreRejected) {
   }
 }
 
+// Bytes 3 and 4 are the Phase 2 types (FOK, PostOnly) and are valid on the
+// wire; byte 5 and above stay an InvalidRecord error with the record index.
+TEST(Flowfile, FokAndPostOnlyTypeBytesAreAccepted) {
+  std::vector<FlowRecord> records{
+      FlowRecord{FlowOp::Submit, lob::Side::Buy, lob::OrderType::FOK, 1, 100, 5, 1},
+      FlowRecord{FlowOp::Submit, lob::Side::Sell, lob::OrderType::PostOnly, 2, 101, 6, 2},
+  };
+  const TempFile file("phasetwo.bin");
+  FlowErrorInfo error;
+  write_binary(file.str(), records, error);
+  ASSERT_FALSE(error) << error.message;
+
+  const std::vector<FlowRecord> read = read_binary(file.str(), error);
+  ASSERT_FALSE(error) << error.message;
+  EXPECT_EQ(read, records);
+  EXPECT_EQ(static_cast<unsigned char>(read[0].type), 3);
+  EXPECT_EQ(static_cast<unsigned char>(read[1].type), 4);
+}
+
 TEST(Flowfile, WriterDestructorClosesAndWritesCount) {
   const TempFile file("raii.bin");
   const std::vector<FlowRecord> records = random_records(4, 17);
@@ -430,6 +449,8 @@ TEST(Flowfile, CsvWritesWordsAndHeader) {
       FlowRecord{FlowOp::Submit, lob::Side::Buy, lob::OrderType::Limit, 1, 100, 5, 999},
       FlowRecord{FlowOp::Cancel, lob::Side::Sell, lob::OrderType::Market, 2, 0, 0, 1000},
       FlowRecord{FlowOp::Modify, lob::Side::Buy, lob::OrderType::IOC, 3, -7, 12, 1001},
+      FlowRecord{FlowOp::Submit, lob::Side::Buy, lob::OrderType::FOK, 4, 101, 8, 1002},
+      FlowRecord{FlowOp::Submit, lob::Side::Sell, lob::OrderType::PostOnly, 5, 102, 9, 1003},
   };
   FlowErrorInfo error;
   lob::flowfile::write_csv(file.str(), records, error);
@@ -446,6 +467,33 @@ TEST(Flowfile, CsvWritesWordsAndHeader) {
   EXPECT_EQ(line, "cancel,sell,market,2,0,0,1000");
   ASSERT_TRUE(std::getline(input, line));
   EXPECT_EQ(line, "modify,buy,ioc,3,-7,12,1001");
+  ASSERT_TRUE(std::getline(input, line));
+  EXPECT_EQ(line, "submit,buy,fok,4,101,8,1002");
+  ASSERT_TRUE(std::getline(input, line));
+  EXPECT_EQ(line, "submit,sell,post_only,5,102,9,1003");
+
+  // The words read back as the same records.
+  const std::vector<FlowRecord> read = read_csv_all(file.str(), error);
+  ASSERT_FALSE(error) << error.message;
+  EXPECT_EQ(read, records);
+}
+
+TEST(Flowfile, CsvUnknownTypeWordIsRejected) {
+  const TempFile file("badtype.csv");
+  {
+    std::ofstream out(file.path(), std::ios::binary);
+    ASSERT_TRUE(out.is_open());
+    out << "op,side,type,id,price,qty,ts_ns\n"
+        << "submit,buy,fok,1,100,5,1\n"
+        << "submit,buy,gtd,2,100,5,2\n";
+  }
+
+  FlowErrorInfo error;
+  const std::vector<FlowRecord> records = read_csv_all(file.str(), error);
+  EXPECT_EQ(error.code, FlowError::InvalidCsv);
+  EXPECT_EQ(records.size(), 1U);
+  EXPECT_NE(error.message.find("line 3"), std::string::npos) << error.message;
+  EXPECT_NE(error.message.find("type"), std::string::npos) << error.message;
 }
 
 TEST(Flowfile, BinaryAndCsvAreEquivalent) {
