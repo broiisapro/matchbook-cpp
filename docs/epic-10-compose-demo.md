@@ -33,10 +33,11 @@ published latency results come from the idle-machine run described in Epic 09.
    image. A broken Linux port fails the image instead of shipping a binary
    nobody exercised.
 3. **`runtime`** is the bare Ubuntu 24.04 base image. Every binary is
-   statically linked against the vcpkg libraries (zlib, xxHash, HDR histogram),
-   so the base image's C++ runtime and libc are all it needs; nothing is
-   installed in this stage, which also means it needs no package downloads
-   (PR #167 removed the last apt layer). It contains the stripped `lobsim`,
+   statically linked against the vcpkg libraries it uses (zlib, xxHash, HDR
+   histogram), so the base image's C++ runtime and libc are all it needs;
+   nothing is installed in this stage, which also means it needs no package
+   downloads (PR #167 removed the last apt layer). It contains the stripped
+   `lobsim`,
    `lob_gateway`, `lob_publisher`, `lob_md_listen`, `lob_loadgen` and the
    `loadgen-entrypoint` script; its default entrypoint is `lobsim`, so the
    existing `docker run <image> difftest …` usage still works.
