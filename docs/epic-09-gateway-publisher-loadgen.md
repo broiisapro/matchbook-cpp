@@ -35,8 +35,8 @@ Every port is a flag and the gateway accepts 0, reporting the port the kernel
 chose; the Compose demo and the wiring test rely on that. The libraries live in
 `net/<component>/` (`gateway`, `publisher`, `md_client`, `loadgen`) and are
 compiled into `lob_net`; the executables are thin `main.cpp` files under
-`apps/<name>/` (decision C52). The four services, `lobsim` and the engines all
-speak the §14 protocol from `lob_net`.
+`apps/<name>/` (decision C52). The four services speak the §14 protocol from
+`lob_net`; the engines and `lobsim` stay off the wire.
 
 ### Gateway threads and rings
 
@@ -227,9 +227,17 @@ samples above the histogram ceiling are clamped and counted rather than dropped.
 The JSON report (`--report`) carries the run parameters, sent and answered
 counts, `orders_without_response`, response counts by type, the latency
 distribution, and — when `--md-udp-port` is set — the market-data counters from
-a monitor thread running a `FeedHandler`. The exit status is non-zero when any
-order was unanswered or the run failed. The report also embeds a `methodology`
-object so a consumer does not have to infer the measurement:
+a monitor thread running a `FeedHandler`. The monitor binds `--md-bind`
+(`0.0.0.0` by default, so loopback and a container's bridge address both work;
+issue #152, merged as PR #169) and after the last response keeps draining until
+its local book has applied everything the stream announced, bounded by
+`--md-settle-ms` (2000 by default), so a trailing gap announced by an idle
+heartbeat is recovered before the report is written. The `md` block carries
+`final_seq`, `highest_known_seq`, `unrecovered_gaps` (0 means the local book
+has applied everything the stream announced) and `heartbeats`. The exit status
+is non-zero when any order was unanswered or the run failed. The report also
+embeds a `methodology` object so a consumer does not have to infer the
+measurement:
 
 > **Closed loop, one request in flight.** A slow response delays the next
 > request instead of queueing behind it, so the percentiles describe an
@@ -403,11 +411,13 @@ minimal Ubuntu image as well.
   sequence and builds from later updates. §15.3 documents this; a snapshot is a
   v2.1 concern, and the heartbeats only make a lost tail visible, not a
   subscriber's entire starting state.
-- **The load generator's market-data monitor binds loopback.** The monitor's
-  default is `127.0.0.1`, so a containerized load generator cannot receive the
-  publisher's bridge traffic without sharing the publisher's network namespace.
-  The Compose demo uses that namespace and a loopback destination for it; a
-  bind-address flag is a follow-up, not part of this epic.
+- **The load generator's market-data monitor is no longer loopback-only.**
+  The first version defaulted to `127.0.0.1`, so a containerized load generator
+  could not receive the publisher's bridge traffic without sharing the
+  publisher's network namespace. Issue #152 (merged as PR #169) added
+  `--md-bind` (default `0.0.0.0`) and an end-of-run completeness check, so the
+  Compose demo runs the load generator as an ordinary bridge service. The
+  namespace workaround is gone; epic 10 describes the current topology.
 - **No cancel-on-disconnect.** A session's resting orders stay in the book after
   the connection closes. This is deliberate for v2.0 — there is no
   session-cancel message — and it means a client that disconnects can leave
