@@ -39,11 +39,6 @@ struct ListenerOptions {
   std::size_t stop_after_messages = 0;
 };
 
-struct ListenerResult {
-  FeedCounters counters;
-  bool opened = false;
-};
-
 inline std::string format_levels(const std::vector<Level>& levels) {
   if (levels.empty()) {
     return "-";
