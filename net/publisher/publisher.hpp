@@ -40,6 +40,8 @@ struct PublisherConfig {
   /// Optional extra destination for a multicast group. The publisher only
   /// sends; it never joins the group.
   std::optional<Endpoint> multicast_group;
+  /// Recovery listener address and port. Port 0 asks the kernel for an
+  /// ephemeral port; recovery_port() reports the bound one.
   std::string recovery_bind_host{"0.0.0.0"};
   std::uint16_t recovery_port = 9002;
   std::size_t retransmit_capacity = 65536;

@@ -7,9 +7,7 @@
 #include <array>
 #include <cerrno>
 #include <cstdio>
-#include <cstring>
 #include <limits>
-#include <stdexcept>
 #include <utility>
 
 #include "net/protocol/codec.hpp"
@@ -473,6 +471,8 @@ bool Publisher::on_recovery_frame(RecoveryClient& client, std::span<const std::b
         if (!stored.has_value()) {
           continue;  // a gap in the held range: skip the missing sequence
         }
+        // Replayed frames keep their market-data sequence in the header; the
+        // subscriber uses it to slot them into the gap it is filling.
         if (!queue_recovery_bytes(client, stored->data(), stored->size())) {
           return false;
         }
