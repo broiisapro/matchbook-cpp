@@ -81,18 +81,30 @@ RUN cmake --build /src/build --target all
 
 RUN ctest --test-dir /src/build --output-on-failure
 
+# Strip the five binaries the runtime stage copies. A Release build keeps its
+# symbol table, which the demo services never use; the tests and the tools stay
+# unstripped, so a failing in-image run still prints usable frames. binutils
+# arrives with build-essential.
+RUN strip --strip-unneeded \
+        /src/build/lobsim \
+        /src/build/lob_gateway \
+        /src/build/lob_publisher \
+        /src/build/lob_md_listen \
+        /src/build/lob_loadgen
+
 # ---------------------------------------------------------------------------
-# Runtime stage: the CLI and the Phase 3 services. Everything is statically
-# linked against zlib, xxHash and the HDR histogram from vcpkg and needs only
-# the C++ runtime. bash is present in the Ubuntu base image and is what the
-# Compose health checks use (/dev/tcp and /proc/net), so nothing extra is
-# installed for them.
+# Runtime stage: exactly what docker-compose.yml runs, plus the CLI — five
+# binaries and the load generator's argument wrapper. Everything is statically
+# linked against zlib, xxHash and the HDR histogram from vcpkg, so the only
+# shared dependencies left are the C++ runtime (libstdc++, libgcc_s) and libc.
+#
+# Nothing is installed here. The Ubuntu base image already carries those
+# runtime libraries, and it already carries the shell tools the Compose health
+# checks use (bash with /dev/tcp, /proc/net and stdbuf), so an apt layer would
+# fetch and unpack packages that are present at the same versions — and would
+# make the runtime stage fail without network access.
 # ---------------------------------------------------------------------------
 FROM ubuntu:${UBUNTU_VERSION} AS runtime
-
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends libstdc++6 \
-    && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /src/build/lobsim /usr/local/bin/lobsim
 COPY --from=build /src/build/lob_gateway /usr/local/bin/lob_gateway
