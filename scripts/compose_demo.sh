@@ -82,15 +82,17 @@ fi
 
 log() { printf 'compose_demo: %s\n' "$*"; }
 
-compose() {
-  docker compose --project-directory "$repo_root" -f "$repo_root/docker-compose.yml" "$@"
-}
+compose_cmd=(docker compose --project-directory "$repo_root" -f "$repo_root/docker-compose.yml")
 
-run() {
+compose() { "${compose_cmd[@]}" "$@"; }
+
+# Build and run are the heavy steps, so they go through the slot gate. A shell
+# function cannot be handed to the gate, hence the explicit command array.
+run_compose() {
   if [[ -n "$heavy" ]]; then
-    "$heavy" "$@"
+    "$heavy" "${compose_cmd[@]}" "$@"
   else
-    "$@"
+    "${compose_cmd[@]}" "$@"
   fi
 }
 
@@ -104,10 +106,10 @@ if [[ "$keep" == "0" ]]; then
 fi
 
 log "building and starting gateway, publisher and two listeners"
-run compose up -d --build
+run_compose up -d --build
 
 log "running $orders orders through the load generator"
-run compose run --rm -T loadgen --orders "$orders" --report "$report_path"
+run_compose run --rm -T loadgen --orders "$orders" --report "$report_path"
 
 log "load generator report ($report_path)"
 report="$(compose run --rm -T --entrypoint cat loadgen "$report_path")"
