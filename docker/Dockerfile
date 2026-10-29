@@ -81,8 +81,8 @@ RUN cmake --build /src/build --target all
 
 RUN ctest --test-dir /src/build --output-on-failure
 
-# Strip the five binaries the runtime stage copies. A Release build keeps its
-# symbol table, which the demo services never use; the tests and the tools stay
+# Strip the five binaries the runtime stage copies: a Release build keeps its
+# symbol table, which the demo services never use. The two test binaries stay
 # unstripped, so a failing in-image run still prints usable frames. binutils
 # arrives with build-essential.
 RUN strip --strip-unneeded \
