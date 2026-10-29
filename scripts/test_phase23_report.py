@@ -45,8 +45,14 @@ def make_w2w(sessions: int, p50: int, *, unanswered: int = 0, gaps: int = 0) -> 
     }
 
 
-def write_spsc(work: Path, index: int, p50: int, mode: str = "batch64") -> None:
-    text = SPSC_TEXT.replace("p50 123", f"p50 {p50}").replace("mode: batch64", f"mode: {mode}")
+def write_spsc(
+    work: Path, index: int, p50: int, mode: str = "batch64", granularity: str = "41.7"
+) -> None:
+    text = (
+        SPSC_TEXT.replace("p50 123", f"p50 {p50}")
+        .replace("mode: batch64", f"mode: {mode}")
+        .replace("granularity 41.7", f"granularity {granularity}")
+    )
     (work / f"spsc-run{index}.txt").write_text(text, encoding="utf-8")
 
 
@@ -149,6 +155,14 @@ def test_build_report_rejects_disagreeing_ring_modes(tmp_path: Path) -> None:
     write_spsc(tmp_path, 99, 300, mode="per_op")
     with pytest.raises(phase23_report.ReportError, match="sampling mode"):
         phase23_report.build_report(tmp_path, ENVIRONMENT, None, None)
+
+
+def test_build_report_uses_the_median_timer_granularity(tmp_path: Path) -> None:
+    fill_work_dir(tmp_path)
+    write_spsc(tmp_path, 1, 300, granularity="41.0")
+    report = phase23_report.build_report(tmp_path, ENVIRONMENT, None, None)
+    assert report["timer"]["granularity_ns"] == 41.7
+    assert report["timer"]["granularity_runs_ns"] == [41.0, 41.7, 41.7, 41.7, 41.7]
 
 
 def test_build_report_requires_runs(tmp_path: Path) -> None:

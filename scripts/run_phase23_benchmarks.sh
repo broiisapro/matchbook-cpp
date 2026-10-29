@@ -427,7 +427,12 @@ if [[ "$dry_run" == 1 ]]; then
   echo "+ cmake --preset release"
   echo "+ cmake --build --preset release --target lob_gateway lob_publisher lob_loadgen spsc_latency"
   for ((run = 1; run <= repetitions; ++run)); do
-    echo "+ ${ring_binary} --messages ${messages} > ${work_dir}/spsc-run${run}.txt"
+    if (( run == 1 )); then
+      echo "+ ${ring_binary} --messages ${messages} > ${work_dir}/spsc-run${run}.txt"
+    else
+      echo "+ ${ring_binary} --messages ${messages} --latency-mode <mode chosen by run 1>" \
+           "> ${work_dir}/spsc-run${run}.txt"
+    fi
   done
   for ((run = 1; run <= repetitions; ++run)); do
     print_wire_to_wire_plan 1 "s1-run${run}"
@@ -479,11 +484,26 @@ fi
 load_before="$(load_average_1m)"
 log "1-minute load average before: ${load_before}"
 
+ring_mode=""
 for ((run = 1; run <= repetitions; ++run)); do
   log "ring run ${run}/${repetitions}"
-  if ! "$ring_binary" --messages "$messages" >"$work_dir/spsc-run${run}.txt" 2>&1; then
+  # The first run picks the sampling mode from the measured timer; every later
+  # run is pinned to it so the repetitions are comparable.
+  ring_arguments=(--messages "$messages")
+  if [[ -n "$ring_mode" ]]; then
+    ring_arguments+=(--latency-mode "$ring_mode")
+  fi
+  if ! "$ring_binary" "${ring_arguments[@]}" >"$work_dir/spsc-run${run}.txt" 2>&1; then
     echo "run_phase23_benchmarks: spsc_latency failed on run ${run}; see $work_dir/spsc-run${run}.txt" >&2
     exit 1
+  fi
+  if [[ -z "$ring_mode" ]]; then
+    ring_mode="$(sed -n 's/^mode: \([A-Za-z0-9_]*\)$/\1/p' "$work_dir/spsc-run1.txt" | head -n 1)"
+    if [[ -z "$ring_mode" ]]; then
+      echo "run_phase23_benchmarks: could not read the ring sampling mode" >&2
+      exit 1
+    fi
+    log "ring sampling mode: ${ring_mode} (pinned for every repetition)"
   fi
 done
 

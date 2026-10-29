@@ -215,9 +215,11 @@ def build_report(work_dir: Path, environment: dict, load_before, load_after) -> 
     modes = sorted({run["mode"] for run in spsc_runs})
     if len(modes) > 1:
         raise ReportError(f"the ring runs disagree on the sampling mode: {', '.join(modes)}")
-    granularities = sorted({run["granularity_ns"] for run in spsc_runs})
-    if len(granularities) > 1:
-        raise ReportError("the ring runs disagree on the timer granularity")
+    # The timer granularity is measured once per process by the harness; it
+    # can move by one step between runs, so the median is reported and every
+    # measurement is kept for the audit.
+    granularities = sorted(run["granularity_ns"] for run in spsc_runs)
+    granularity = granularities[len(granularities) // 2]
 
     groups: dict[int, list[dict]] = {}
     for run in w2w_runs:
@@ -245,7 +247,8 @@ def build_report(work_dir: Path, environment: dict, load_before, load_after) -> 
         "load_before_1m": load_before,
         "load_after_1m": load_after,
         "timer": {
-            "granularity_ns": granularities[0],
+            "granularity_ns": granularity,
+            "granularity_runs_ns": granularities,
             "mode": modes[0],
             "calibrated_event_ns": spsc_runs[0]["calibrated_event_ns"],
             "clock": "bench/timer.hpp monotonic counter",
