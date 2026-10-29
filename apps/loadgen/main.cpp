@@ -12,6 +12,7 @@
 
 #include "net/loadgen/cli.hpp"
 #include "net/loadgen/hdr_latency.hpp"
+#include "net/loadgen/md_monitor.hpp"
 #include "net/loadgen/report.hpp"
 #include "net/loadgen/runner.hpp"
 #include "net/loadgen/tcp_transport.hpp"
@@ -69,6 +70,19 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  std::unique_ptr<loadgen::MdMonitor> md_monitor;
+  if (cli.md_udp_port != 0) {
+    loadgen::MdMonitorOptions md_options;
+    md_options.udp_port = cli.md_udp_port;
+    md_options.recovery_host = cli.recovery.host;
+    md_options.recovery_port = cli.recovery.port;
+    md_monitor = loadgen::MdMonitor::start(md_options, error);
+    if (md_monitor == nullptr) {
+      std::cerr << "lob_loadgen: " << error << '\n';
+      return 1;
+    }
+  }
+
   loadgen::RunnerOptions options;
   options.orders = cli.orders;
   options.seed = cli.seed;
@@ -80,6 +94,10 @@ int main(int argc, char** argv) {
   loadgen::LoadRunner runner(std::move(transports), options, latency);
   loadgen::RunResult result = runner.run();
 
+  if (md_monitor != nullptr) {
+    md_monitor->finish();
+  }
+
   loadgen::Report report;
   report.gateway = cli.gateway_text;
   report.sessions = cli.sessions;
@@ -88,6 +106,10 @@ int main(int argc, char** argv) {
   report.stats = result.stats;
   report.latency = latency.summary();
   report.latency_clamped_samples = latency.clamped_samples();
+  report.has_md = md_monitor != nullptr;
+  if (md_monitor != nullptr) {
+    report.md = md_monitor->summary();
+  }
   report.error = result.error;
 
   if (!write_file(cli.report_path, loadgen::to_json(report))) {
@@ -99,8 +121,13 @@ int main(int argc, char** argv) {
             << " sent=" << stats.requests_sent << '/' << stats.orders_requested
             << " answered=" << stats.first_responses
             << " unanswered=" << stats.orders_without_response() << " p50=" << report.latency.p50_ns
-            << "ns p99=" << report.latency.p99_ns << "ns elapsed=" << stats.elapsed_seconds
-            << "s report=" << cli.report_path << '\n';
+            << "ns p99=" << report.latency.p99_ns << "ns elapsed=" << stats.elapsed_seconds << "s";
+  if (report.has_md) {
+    std::cout << " md_received=" << report.md.received << " md_gaps=" << report.md.gaps_detected
+              << " md_recovered=" << report.md.gaps_recovered
+              << " md_unrecovered=" << report.md.sequence_gaps_unrecovered;
+  }
+  std::cout << " report=" << cli.report_path << '\n';
 
   if (!result.error.empty()) {
     std::cerr << "lob_loadgen: " << result.error << '\n';

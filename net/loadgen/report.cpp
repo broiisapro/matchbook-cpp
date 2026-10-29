@@ -67,6 +67,24 @@ void write_counts(std::ostream& out, const ResponseCounts& counts) {
       << ", \"fill\": " << counts.fill << ", \"cancelled\": " << counts.cancelled << '}';
 }
 
+void write_md(std::ostream& out, const MdSummary& md) {
+  out << "{\n";
+  out << "    \"received\": " << md.received << ",\n";
+  out << "    \"duplicates\": " << md.duplicates << ",\n";
+  out << "    \"gaps_detected\": " << md.gaps_detected << ",\n";
+  out << "    \"gaps_recovered\": " << md.gaps_recovered << ",\n";
+  out << "    \"resets\": " << md.resets << ",\n";
+  out << "    \"final_seq\": " << md.final_seq << ",\n";
+  out << "    \"sequence_gaps_unrecovered\": " << md.sequence_gaps_unrecovered << ",\n";
+  out << "    \"buffered_at_end\": " << md.buffered_at_end << ",\n";
+  out << "    \"trades\": " << md.trades << ",\n";
+  out << "    \"dropped\": " << md.dropped << ",\n";
+  out << "    \"malformed\": " << md.malformed << ",\n";
+  out << "    \"recovery_requests\": " << md.recovery_requests << ",\n";
+  out << "    \"recovery_failures\": " << md.recovery_failures << "\n";
+  out << "  }";
+}
+
 }  // namespace
 
 std::string to_json(const Report& report) {
@@ -125,6 +143,14 @@ std::string to_json(const Report& report) {
   write_counts(out, report.stats.responses_by_type);
   out << ",\n";
 
+  out << "  \"md\": ";
+  if (report.has_md) {
+    write_md(out, report.md);
+  } else {
+    out << "null";
+  }
+  out << ",\n";
+
   out << "  \"methodology\": {\n";
   out << "    \"clock\": "
          "\"std::chrono::steady_clock (monotonic, nanoseconds)\",\n";
@@ -138,6 +164,10 @@ std::string to_json(const Report& report) {
          "\"closed: one request in flight per session; the next request is sent only after its "
          "predecessor's first response\",\n";
   out << "    \"in_flight_per_session\": 1,\n";
+  out << "    \"market_data\": "
+         "\"when md is present, a lob::md::FeedHandler receives the publisher's UDP stream on its "
+         "own thread for the duration of the run; sequence_gaps_unrecovered is 1 only when "
+         "out-of-order frames were still buffered when the stream went quiet, 0 otherwise\",\n";
   out << "    \"coordinated_omission\": "
          "\"A closed-loop client paces the next send behind the previous response, so a slow "
          "response delays the next request instead of queueing behind it. The percentiles "

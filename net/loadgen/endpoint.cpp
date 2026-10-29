@@ -28,6 +28,11 @@ bool parse_port(std::string_view text, std::uint16_t& out, std::string& error) {
 }  // namespace
 
 bool parse_endpoint(std::string_view text, Endpoint& out, std::string& error) {
+  return parse_endpoint_with_default(text, kDefaultGatewayPort, out, error);
+}
+
+bool parse_endpoint_with_default(std::string_view text, std::uint16_t default_port, Endpoint& out,
+                                 std::string& error) {
   if (text.empty()) {
     error = "empty endpoint";
     return false;
@@ -71,7 +76,7 @@ bool parse_endpoint(std::string_view text, Endpoint& out, std::string& error) {
 
   Endpoint parsed;
   parsed.host = std::string(host);
-  parsed.port = kDefaultGatewayPort;
+  parsed.port = default_port;
   if (has_port && !parse_port(port, parsed.port, error)) {
     return false;
   }
