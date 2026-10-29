@@ -194,6 +194,43 @@ mode, the sample count (and any ceiling overflows), p50/p90/p99/p99.9/max/mean
 in nanoseconds, and a final line stating that a run on a shared machine is
 exploratory and not a publishable number.
 
+### Published numbers
+
+The figures below come from one `scripts/run_phase23_benchmarks.sh` run that
+waited for an idle machine and took five repetitions of
+`spsc_latency --messages 1000000`; the median run by p50 is reported. Latency in
+nanoseconds.
+
+| Statistic | ns |
+| --- | --- |
+| p50 | 196 |
+| p90 | 213 |
+| p99 | 705 |
+| p99.9 | 84,543 |
+| max | 182,271 |
+
+| Field | Value |
+| --- | --- |
+| Events per run | 1,000,000 |
+| Samples (median run) | 2,462 |
+| Throughput (median run) | 4,898,954 events/s |
+| p50 across runs | 187–206 ns |
+
+Apple M5 (Mac17,2, arm64, 32 GiB), macOS 27.0.1 (26A434), Apple clang 21.0.0
+(clang-2100.3.34.2), `-O3 -DNDEBUG`, `batch256` sampling, 5 runs of 1,000,000
+events, 2026-10-29 (UTC), commit `3acb776`; 1-minute load average 1.97 before
+the run and 3.21 after it.
+
+What the number does and does not include: it is the enqueue-to-`on_accept`
+handoff of one event, so it contains the producer's push, whatever wait the
+consumer made it do, the pop, the book update and the listener call — and no
+network I/O, which is what makes it a property of the ring and the engine rather
+than of a socket. Because every sample is the per-op mean over 256 accepted
+events, a preemption inside a batch is diluted across it: the p99.9 and max are
+batch means and the single-event tail is worse than they look. The p50 moving
+between 187 ns and 206 ns across the five runs is the resolution of a machine
+with no thread pinning, so treat anything under about 10% as equal.
+
 ## Key decisions and reasoning
 
 - **A ring, not a mutex-protected queue.** The engine thread must never wait on
@@ -301,11 +338,11 @@ exploratory and not a publishable number.
 
 ## Known limitations
 
-- **No published latency numbers yet.** The harness exists and prints a full
-  percentile set, but a publishable number requires an idle machine; latency
-  numbers for the ring will be taken with the rest of the Phase 3 figures and
-  are deliberately not quoted here. Runs taken while other work is in progress
-  are labelled exploratory by the tool itself.
+- **Latency numbers belong to one machine and one sampling mode.** The published
+  figures come from a single idle Apple M5 run in `batch256` mode, so the tail
+  columns are batch means and the numbers only mean something next to the
+  machine, flags and commit quoted with them. There is no cross-machine
+  comparison and no number taken from a container.
 - **Machine-specific padding.** The 128-byte choice is justified for Apple
   M-series cores. On a target with 64-byte lines it over-pads harmlessly; on a
   target with larger lines it could under-separate, which is why the header

@@ -239,6 +239,51 @@ object so a consumer does not have to infer the measurement:
 > latency a request would have seen if the system had stayed busy during a slow
 > response. It is a closed-loop latency benchmark, and the report says so.
 
+### The published measurement
+
+`scripts/run_phase23_benchmarks.sh` is the only sanctioned source of Phase 3
+latency numbers (decision C59). It waits for the 1-minute load average to fall to
+`LOB_BENCH_MAX_LOAD`, builds the release preset, runs five repetitions of the
+ring harness and five wire-to-wire runs at each session count, and renders the
+report with `scripts/phase23_report.py`, which keeps the median run by p50 and
+records the machine, toolchain and load that produced it. The figures below are
+one such run on an idle machine; latency in nanoseconds, median run per session
+count.
+
+| Statistic | 1 session | 4 sessions |
+| --- | --- | --- |
+| p50 | 25,679 | 35,711 |
+| p50 across runs | 25,263–26,127 ns | 34,303–37,311 ns |
+| p90 | 45,823 | 63,231 |
+| p99 | 211,583 | 101,951 |
+| p99.9 | 215,935 | 137,343 |
+| max | 2,887,679 | 3,186,687 |
+| Requests/s (median run) | 30,172 | 94,578 |
+| Orders per run | 200,000 | 200,000 |
+| Unrecovered market-data gaps | 0 | 0 |
+| Runs | 5 | 5 |
+
+Apple M5 (Mac17,2, arm64, 32 GiB), macOS 27.0.1 (26A434), Apple clang 21.0.0
+(clang-2100.3.34.2), `-O3 -DNDEBUG`, per-request `std::chrono::steady_clock`
+timing, 5 runs of 200,000 orders at 1 session and 5 at 4 sessions, 2026-10-29
+(UTC), commit `3acb776`; 1-minute load average 1.97 before the run and 3.21
+after it. Every run in the median set had zero unanswered orders and zero
+unrecovered gaps.
+
+The median is dominated by the plumbing rather than by matching: each request
+crosses the kernel's loopback path twice, wakes the gateway's network thread,
+runs through two rings and wakes the load generator's poll loop, while the
+engine's own share is a few hundred nanoseconds. Four sessions therefore cost
+median latency — 35.7 µs against 25.7 µs, because the gateway's one network
+thread and one engine thread serve four clients in turn — but improve p99 from
+212 µs to 102 µs and throughput from 30,172 to 94,578 requests/s, because with
+several requests in flight neither process is idle long enough to be descheduled
+between a request and its response; the 2.9 ms max is one scheduling stall seen
+end to end. The closed loop is the important caveat:
+one request in flight per session means a slow response delays the next request
+instead of queueing behind it, so these are an interactive client's steady-state
+numbers and not a service time under load.
+
 ### The wiring test
 
 The four executables are also tested together, not only as libraries. The
@@ -400,9 +445,10 @@ minimal Ubuntu image as well.
 - **The load generator is closed-loop.** It measures an interactive client and
   explicitly does not model coordinated omission; it is not a saturation or
   open-loop benchmark.
-- **No published latency numbers in this document.** Ring and wire-to-wire
-  figures come only from the idle-machine Phase 2/3 run and live in the README;
-  Docker figures are functional results and are never published as latency.
+- **Latency figures are one machine's.** The numbers in *The published
+  measurement* describe this Mac, these flags and one commit; they are not a
+  cross-machine comparison, and container runs are functional results that are
+  never published as latency.
 - **The wiring test needs four binaries and a loopback stack.** It is skipped
   when the targets are not built (the Linux benchmark-off build still builds the
   services), and it cannot run on a host without the ability to bind loopback
