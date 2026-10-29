@@ -150,11 +150,13 @@ CSV form, header `op,side,type,id,price,qty,ts_ns` with op/side/type as words (`
 
 ## 9. Differential testing (WS B)
 
-`lob_opgen` produces seeded operation streams (std::mt19937_64 with explicit distributions implemented by hand, because standard distributions are not portable across library implementations). The mix is weighted toward crossing orders, modifies at the best level, cancels of queue heads and tails, IOC/market against an empty side, duplicate and unknown ids, and prices at the Config edges. Both engines receive each operation with a recording listener; after every operation the event vectors must be identical and digests equal. On mismatch: print seed, op index, the op, and the first differing event. `lobsim difftest --ops N --seed S` prints `mismatches: 0`. PR CI runs ≥ 1M ops (one seed); 10M × 5 seeds runs on demand / nightly.
+`lob_opgen` produces seeded operation streams (std::mt19937_64 with explicit distributions implemented by hand, because standard distributions are not portable across library implementations). The mix is weighted toward crossing orders, modifies at the best level, cancels of queue heads and tails, IOC/market against an empty side, duplicate and unknown ids, and prices at the Config edges. Both engines receive each operation with a recording listener; after every operation the event vectors must be identical and digests equal. On mismatch: print seed, op index, the op, and the first differing event. `lobsim difftest --ops N --seed S` prints `mismatches: 0`.
+
+Submit types are selected with `--types basic|all` (default `basic`). `all` turns on FOK and post-only at about 5 % each — half the post-only orders priced through the opposite best level, so the `WouldCross` reject path is covered as well as the resting path — and the generator's model treats both as non-resting. The default mixes keep those weights at zero so CI never compares a FOK-implementing engine against a FOK-rejecting one (decision C53). PR CI runs ≥ 1M ops (one seed); 10M × 5 seeds runs on demand / nightly, and the nightly runs each config with both mixes on both ladders.
 
 ## 10. Tools (WS C)
 
-- `lobsim gen --orders N --seed S --out F [--cancel-ratio r] [--csv]`: Poisson arrivals, random-walk mid, configurable cancel ratio.
+- `lobsim gen --orders N --seed S --out F [--cancel-ratio r] [--modify-ratio r] [--types basic|all] [--csv]`: Poisson arrivals, random-walk mid, configurable cancel and modify ratios. `--types all` adds FOK and post-only submits at about 5 % each on top of the market/IOC ratios (in this generator they are fixed, so the basic flow for a seed stays byte-identical); the default `basic` mix never emits them (decision C53).
 - `lobsim replay F --engine fast|reference [--digest] [--trades out.csv]`: prints ops, trades, final digest (hex), wall time.
 - `lobsim convert-tardis in.csv.gz --out F [--tick 0.00001] [--max-rows N]`: Tardis `incremental_book_L2` (columns `exchange,symbol,timestamp,local_timestamp,is_snapshot,side,price,amount`; `amount` is the new absolute level size; skip until first snapshot; a snapshot after deltas clears the book). Exact decimal parsing to ticks. Per-level synthetic queues: increase → add delta at the back; decrease → reduce/cancel from the back; 0 → cancel all at the level; before adding at a price that would cross the opposite side, cancel the crossed opposite levels. Replay therefore produces no trades. Fixture: Binance ETHBTC 2026-10-01, first hour, committed with its golden digest.
 
@@ -222,15 +224,16 @@ Decoding a header checks, in order: enough bytes (Truncated), reserved zero (Bad
 Phase 3 splits the stack into processes that speak the §14 protocol over TCP,
 plus one UDP hop for market data (decision C54):
 
-| Process | Executable | Sockets |
-|---|---|---|
-| Gateway | `lob_gateway` | order entry TCP 9000; market-data stream TCP 9001 |
-| Publisher | `lob_publisher` | connects to 9001; UDP fan-out to its destinations; recovery TCP 9002 |
-| Feed handler | `lob_md_listen` | UDP receive; connects to the recovery port |
-| Load generator | `lob_loadgen` | connects to 9000; optional UDP and recovery |
+| Process | Executable | Sockets | Threads |
+|---|---|---|---|
+| Gateway | `lob_gateway` | order entry TCP 9000; market-data stream TCP 9001 | one network thread, one engine thread |
+| Publisher | `lob_publisher` | connects to 9001; UDP fan-out to its destinations; recovery TCP 9002 | one poll loop |
+| Feed handler | `lob_md_listen` | UDP receive 9100; connects to the recovery port 9002 | one thread |
+| Load generator | `lob_loadgen` | connects to 9000; optional UDP monitor and recovery | one send loop, plus a monitor thread when it counts market data |
 
 All four default to loopback-friendly ports but every port is a flag; the
-gateway accepts 0 and reports the port the kernel chose.
+gateway accepts 0 and reports the port the kernel chose. The load generator is
+a client, not a server: it runs for the length of the load and exits.
 
 ### 15.1 Gateway threads and rings
 
@@ -263,11 +266,18 @@ disconnected past that bound. The engine never drops an event: if the
 market-data ring is full it waits for the network thread to drain it, and a
 subscriber that cannot keep up is disconnected instead of slowing the engine.
 
+The gateway also bounds the number of peers: at most 1024 concurrent
+order-entry sessions and 256 concurrent market-data subscribers. A connection
+arriving beyond either limit is closed immediately. Responses queued for one
+session are capped at 4 MiB, so a client that stops reading is disconnected
+rather than growing the gateway.
+
 ### 15.2 Sessions and order ids
 
 One accepted connection is one session. v2.0 has no logon, authentication or
 session-resume message, so the session begins at connect and ends at close.
-Session ids start at 1, are never reused and fit in 24 bits.
+Session ids start at 1, are never reused and fit in 24 bits; at most 1024
+sessions exist at once.
 
 The engine order id is `(session_id << 40) | client_order_id`; a client order
 id must therefore fit in 40 bits. An id that does not is answered with `Reject`
@@ -297,13 +307,21 @@ The engine thread publishes one message per `on_book_update` (`BookUpdate`) and
 per `on_trade` (`Trade`), in the order the book produced them. The header `seq`
 field of those frames is a single, gap-free stream sequence starting at 1 — on
 this stream it is a stream sequence, not a per-connection counter. The gateway
-serves the stream on the market-data TCP port to any number of subscribers.
+serves the stream on the market-data TCP port to up to 256 subscribers at once.
 
 A subscriber receives the stream from the moment its connection is accepted;
 there is no snapshot in v2.0, so a late subscriber starts at the current
 sequence and must build its book from later updates (or from a snapshot a
 future version will add). Every subscriber gets the same frames with the same
 sequence numbers.
+
+The stream also carries **heartbeats** (decision C57). When no event has been
+published for 100 ms, the gateway emits a `Heartbeat` whose header `seq` is the
+last sequence number published; a heartbeat never consumes a sequence number.
+The publisher forwards heartbeats over UDP like any other message, and
+`FeedHandler` treats a heartbeat whose `seq` is above its last seen sequence as
+a gap and recovers it. This closes the trailing-gap blind spot: a lost final
+datagram is detected even when no later event follows it.
 
 Slow subscribers do not slow the engine: the gateway queues at most **1 MiB**
 of pending frames per subscriber (26,214 `BookUpdate`s or 18,724 `Trade`s) on
@@ -315,4 +333,58 @@ then-current sequence.
 The gateway is not the publisher: `lob_publisher` connects to this stream and
 re-publishes the same frames over UDP, keeps a retransmit store and answers
 `RecoveryRequest` with the held frames or a `SequenceReset` (§14.2).
+
+### 15.4 Publisher and recovery
+
+`lob_publisher` is one single-threaded poll loop. It connects to the gateway's
+market-data stream, frames the stream with a `StreamFramer`, stores every frame
+in a preallocated retransmit ring and appends consecutive frames to a UDP
+datagram until the next one would exceed **1200 bytes**, then sends it to every
+`--udp-dest host:port`. Destinations are resolved once at start-up, so a name
+must exist before the publisher starts. `--mcast-group addr:port` adds one
+send-only multicast destination; nothing in the project joins a group, so
+unicast is the tested path. Frames are forwarded unchanged and keep their
+market-data sequence in the header.
+
+The publisher reconnects to the gateway with a backoff that starts at 100 ms
+and doubles to a 5 s ceiling. It keeps the last **65,536** messages by default
+and accepts `--retransmit` up to **1,048,576**; an older message is dropped
+from the store as newer ones arrive.
+
+The recovery service listens on TCP **9002** and serves up to 64 concurrent
+recovery clients from the same poll loop, so a slow recovery never stalls live
+publishing. A `RecoveryRequest(from, to)` is answered with the frames in that
+range that are still held, clamped to the newest published sequence. A request
+whose `from` is older than the oldest held frame — or any request while the
+store is empty — is answered with `SequenceReset{oldest held}` (`1` when
+nothing is held), telling the subscriber where the retained stream starts. A
+request that starts after the newest frame gets no response; one that asks for
+more than the store's capacity from a held sequence is refused and its client
+disconnected. Refused requests are counted.
+
+### 15.5 Feed handler and load generator
+
+`lob_md_listen` owns one `FeedHandler`: a UDP socket on **9100** (bind address
+`0.0.0.0` by default), a local price-level book and a TCP client to the
+recovery service. It expects the publisher's sequence to advance by one. A
+frame that arrives ahead of the expected number is buffered (up to 4,096
+messages) and applied when the hole closes, either from late datagrams or from
+recovery; a `SequenceReset` moves the expectation to the named sequence. The
+handler asks for at most 1,024 messages per request, retries a failed exchange
+after a 1 s timeout, and counts received frames, duplicates, detected gaps,
+recovered gaps, resets, malformed frames and dropped frames. `lob_md_listen`
+prints the top of its local book and those counters every second (flags
+`--udp-port`, `--bind`, `--recovery`, `--top`, `--seconds`).
+
+`lob_loadgen` opens `--sessions` order-entry connections and sends a seeded
+order flow in a closed loop: request `n+1` is sent from the `n`-th response, so
+the number is a round-trip latency under the load the client itself creates.
+It stamps each send, stops when every request has its first response or
+`--timeout-ms` expires, and records send-to-first-response into an HDR
+histogram. `--rate` limits the aggregate rate and `--md-udp-port` additionally
+subscribes a monitor that receives the publisher's UDP stream, detects gaps and
+uses the recovery service to close them. The JSON report (`--report`) carries
+the run parameters, percentiles, unanswered-order count, market-data counters
+and an error field; the exit status is non-zero when any order was unanswered
+or the run failed.
 
