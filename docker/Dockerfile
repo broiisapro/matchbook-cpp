@@ -56,18 +56,17 @@ COPY . /src
 # sits inside the source tree because tests locate committed fixtures
 # (tests/data/) by walking up from their working directory.
 #
-# Two Linux-only configure flags:
-#   CMAKE_CXX_SCAN_FOR_MODULES=OFF  the project uses no C++ modules and
-#       Ubuntu's clang package does not ship clang-scan-deps.
-#   -fsized-deallocation  include/lob/pool.hpp calls the sized aligned
-#       operator delete; libstdc++ declares that overload only when the
-#       compiler defines __cpp_sized_deallocation, while libc++ (macOS)
-#       declares it unconditionally. Tracked as a portability fix request.
+# One Linux-only configure flag: the project uses no C++ modules and Ubuntu's
+# clang package does not ship clang-scan-deps, so CMake's module scanner is
+# turned off. (The -fsized-deallocation workaround pool.hpp used to need went
+# away with #112, which deallocates through the unsized aligned operator
+# delete.) The runtime output directory is flattened so every executable,
+# including the apps/<name>/ ones, lands in /src/build for the COPY below.
 RUN cmake -S /src -B /src/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_CXX_COMPILER=clang++ \
         -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
-        -DCMAKE_CXX_FLAGS=-fsized-deallocation \
+        -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=/src/build \
         -DCMAKE_TOOLCHAIN_FILE=/opt/vcpkg/scripts/buildsystems/vcpkg.cmake \
         -DVCPKG_TARGET_TRIPLET=arm64-linux \
         -DLOB_PRICE_LADDER=array
