@@ -13,8 +13,13 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  # Pull requests get one group per branch, so a new push supersedes the run it
+  # replaced and only the newest commit of a branch costs a full CI cycle.
+  # Pushes to main get one group per commit and never cancel: every merged
+  # commit keeps the run that proves it was green, and a merge that follows
+  # another merge cannot delete the previous evidence (wave-07 audit).
+  group: ci-${{ github.event_name }}-${{ github.head_ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -104,11 +109,9 @@ jobs:
 
   linux:
     name: linux
-    # Advisory until it has been green on main (decision C55): the arm64 Linux
-    # port is checked on every push but does not block a merge while the port
-    # is still settling. Hosted arm64 Linux runners are free for public
-    # repositories.
-    continue-on-error: true
+    # Required check (promoted in wave 08 after a long green streak on main):
+    # the arm64 Linux port is checked on every pull request and every push.
+    # Hosted arm64 Linux runners are free for public repositories.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     steps:
@@ -122,13 +125,13 @@ jobs:
           "$VCPKG_ROOT/vcpkg" version | sed -n 1p
       - name: Configure (linux-release)
         run: cmake --preset linux-release -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-      # The benchmark binary and the SPSC latency harness include the macOS
-      # timer in bench/timer.hpp; LOB_BUILD_BENCH=OFF in the preset drops the
-      # former, and naming the targets here drops the latter. Everything the
-      # test suite executes (the engine, the reference engine, the tools, the
-      # wire protocol and the two test binaries) is built.
+      # LOB_BUILD_BENCH=OFF in the preset drops the benchmark binary and the
+      # SPSC latency harness, the only two targets that include the macOS timer
+      # in bench/timer.hpp. What remains is the whole portable tree, so the
+      # default `all` target builds every executable and test binary without a
+      # hand-maintained list going stale when a new target appears.
       - name: Build (linux-release)
-        run: cmake --build --preset linux-release --target lobsim lob_tests test_alloc
+        run: cmake --build --preset linux-release --target all
       - name: Run tests (linux-release)
         run: ctest --preset linux-release
       - name: ccache statistics
@@ -136,14 +139,13 @@ jobs:
 
   docker:
     name: docker
-    # Advisory, like `linux`: the image build exercises the whole Linux port
-    # end to end (it compiles the portable targets and runs their tests inside
-    # the image) but does not block a merge yet (decision C55).
+    # Required check, like `linux` (promoted in wave 08): the image build
+    # exercises the whole Linux port end to end (it compiles the portable tree
+    # and runs its tests inside the image), so a red image is a real failure.
     #
     # An image rebuild costs several minutes even with a warm layer cache, so a
     # pull request only builds it when it touches a path the image is made of.
-    # Pushes to main always build, which is what makes "green on main" true.
-    continue-on-error: true
+    # Pushes to main always build, which is what keeps "green on main" true.
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     steps:
