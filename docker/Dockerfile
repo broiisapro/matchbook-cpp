@@ -56,12 +56,13 @@ COPY . /src
 # sits inside the source tree because tests locate committed fixtures
 # (tests/data/) by walking up from their working directory.
 #
-# One Linux-only configure flag: the project uses no C++ modules and Ubuntu's
+# Linux-only configure flags: the project uses no C++ modules and Ubuntu's
 # clang package does not ship clang-scan-deps, so CMake's module scanner is
-# turned off. (The -fsized-deallocation workaround pool.hpp used to need went
-# away with #112, which deallocates through the unsized aligned operator
-# delete.) The runtime output directory is flattened so every executable,
-# including the apps/<name>/ ones, lands in /src/build for the COPY below.
+# turned off; LOB_BUILD_BENCH=OFF drops the benchmark binary and the SPSC
+# latency harness, the only two targets that include the macOS timer in
+# bench/timer.hpp. The runtime output directory is flattened so every
+# executable, including the apps/<name>/ ones, lands in /src/build for the COPY
+# below.
 RUN cmake -S /src -B /src/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_CXX_COMPILER=clang++ \
@@ -69,15 +70,14 @@ RUN cmake -S /src -B /src/build -G Ninja \
         -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=/src/build \
         -DCMAKE_TOOLCHAIN_FILE=/opt/vcpkg/scripts/buildsystems/vcpkg.cmake \
         -DVCPKG_TARGET_TRIPLET=arm64-linux \
-        -DLOB_PRICE_LADDER=array
+        -DLOB_PRICE_LADDER=array \
+        -DLOB_BUILD_BENCH=OFF
 
-# test_alloc is built too: ctest registers its tests, so leaving the binary out
-# would leave the suite unable to discover them. The four Phase 3 executables
-# are what docker-compose.yml runs; building them here means a Compose demo
-# can never pick up a stale or missing binary.
-RUN cmake --build /src/build --target \
-        lob lob_reference lob_flowfile lob_opgen lob_net lobsim lob_tests test_alloc \
-        lob_gateway lob_publisher lob_md_listen lob_loadgen
+# The default target set: with the benchmark option off, `all` is exactly the
+# portable tree, the same set the Linux CI job builds. test_alloc is part of it
+# and ctest would otherwise be unable to discover its tests. The four Phase 3
+# executables are what docker-compose.yml runs.
+RUN cmake --build /src/build --target all
 
 RUN ctest --test-dir /src/build --output-on-failure
 
