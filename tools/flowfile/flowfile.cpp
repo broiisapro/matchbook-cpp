@@ -97,6 +97,12 @@ std::optional<OrderType> parse_type(std::string_view word) {
   if (word == "ioc") {
     return OrderType::IOC;
   }
+  if (word == "fok") {
+    return OrderType::FOK;
+  }
+  if (word == "post_only") {
+    return OrderType::PostOnly;
+  }
   return std::nullopt;
 }
 
@@ -113,7 +119,7 @@ std::optional<std::string> validate_record(const FlowRecord& record, std::uint64
     return "record " + std::to_string(index) + ": invalid side byte " + std::to_string(side);
   }
   const auto type = static_cast<std::uint8_t>(record.type);
-  if (type > 2) {
+  if (type > 4) {
     return "record " + std::to_string(index) + ": invalid type byte " + std::to_string(type);
   }
   return std::nullopt;

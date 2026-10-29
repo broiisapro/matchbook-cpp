@@ -46,7 +46,8 @@ TEST(FlowRecord, RoundTripsEveryOpSideAndType) {
   for (const FlowOp op : {FlowOp::Submit, FlowOp::Cancel, FlowOp::Modify}) {
     for (const lob::Side side : {lob::Side::Buy, lob::Side::Sell}) {
       for (const lob::OrderType type :
-           {lob::OrderType::Limit, lob::OrderType::Market, lob::OrderType::IOC}) {
+           {lob::OrderType::Limit, lob::OrderType::Market, lob::OrderType::IOC, lob::OrderType::FOK,
+            lob::OrderType::PostOnly}) {
         const FlowRecord record{op, side, type, 42, 101, 7, 123456789};
         EXPECT_EQ(lob::flowfile::decode(encoded(record)), record);
       }

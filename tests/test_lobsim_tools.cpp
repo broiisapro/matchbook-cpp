@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#define XXH_STATIC_LINKING_ONLY
+#include <xxhash.h>
+
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -10,6 +13,7 @@
 #include <system_error>
 #include <vector>
 
+#include "lob/types.hpp"
 #include "tools/flowfile/flowfile.hpp"
 #include "tools/lobsim/commands.hpp"
 
@@ -91,6 +95,11 @@ std::string read_file(const std::filesystem::path& path) {
   return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
 }
 
+std::uint64_t hash_file(const std::filesystem::path& path) {
+  const std::string bytes = read_file(path);
+  return XXH64(bytes.data(), bytes.size(), 0);
+}
+
 void write_text(const std::filesystem::path& path, std::string_view text) {
   std::ofstream out(path, std::ios::binary);
   ASSERT_TRUE(out.is_open());
@@ -127,6 +136,51 @@ TEST(LobsimTools, GenIsDeterministicForSameSeed) {
   EXPECT_EQ(summary.at("orders"), "1000");
   const std::uint64_t records = std::stoull(summary.at("records"));
   EXPECT_GE(records, 1000U);
+}
+
+// The default (basic) flow must stay byte-identical for an existing seed after
+// the Phase 2 type support landed. The constant was produced from the
+// pre-change binary: `lobsim gen --orders 500 --seed 42 --out pre42.bin`,
+// hashed outside the test with xxh64sum (XXH64, seed 0). Adding FOK/PostOnly
+// to --types all must not move a single byte of the default stream.
+TEST(LobsimTools, GenBasicOutputIsByteIdenticalToThePreChangeFile) {
+  const TempFile file("gen_golden.bin");
+
+  const Captured run = run_captured_stdout(
+      lobsim::run_gen, {"gen", "--orders", "500", "--seed", "42", "--out", file.str()});
+  ASSERT_EQ(run.code, 0) << run.err;
+  EXPECT_EQ(hash_file(file.path()), 0x6a92c23dd88a534eULL);
+}
+
+TEST(LobsimTools, GenAllTypesWritesFokAndPostOnlyRecords) {
+  const TempFile file("gen_all.bin");
+
+  const Captured run = run_captured_stdout(
+      lobsim::run_gen,
+      {"gen", "--orders", "2000", "--seed", "7", "--out", file.str(), "--types", "all"});
+  ASSERT_EQ(run.code, 0) << run.err;
+
+  lob::flowfile::FlowErrorInfo error;
+  lob::flowfile::FlowReader reader;
+  reader.open(file.str(), error);
+  ASSERT_FALSE(error) << error.message;
+
+  std::uint64_t foks = 0;
+  std::uint64_t post_onlys = 0;
+  lob::flowfile::FlowRecord record{};
+  while (reader.read(record, error)) {
+    if (record.op != lob::flowfile::FlowOp::Submit) {
+      continue;
+    }
+    if (record.type == lob::OrderType::FOK) {
+      ++foks;
+    } else if (record.type == lob::OrderType::PostOnly) {
+      ++post_onlys;
+    }
+  }
+  ASSERT_FALSE(error) << error.message;
+  EXPECT_GT(foks, 0U);
+  EXPECT_GT(post_onlys, 0U);
 }
 
 TEST(LobsimTools, GenCsvHasHeaderAndRoundTripsThroughReplay) {
@@ -171,8 +225,30 @@ TEST(LobsimTools, ReplayReferenceMatchesHandComputedSummary) {
   EXPECT_EQ(summary.at("traded_qty"), "2");
   EXPECT_EQ(summary.at("final_orders"), "2");
   EXPECT_EQ(summary.at("digest"), kHandFlowDigest);
+  EXPECT_EQ(summary.at("types"), "limit=3 market=0 ioc=0 fok=0 post_only=0");
   EXPECT_TRUE(summary.count("wall_ms") == 1);
   EXPECT_TRUE(summary.count("ns_per_record") == 1);
+}
+
+// Replay hands the record's order type to the engine and reports the per-type
+// submit counts, so a flow file's Phase 2 types are visible end to end.
+TEST(LobsimTools, ReplayReportsPhaseTwoTypeCounts) {
+  const TempFile flow("phasetwo.csv");
+  write_text(flow.path(),
+             "op,side,type,id,price,qty,ts_ns\n"
+             "submit,buy,limit,1,100,5,1\n"
+             "submit,sell,limit,2,101,3,2\n"
+             "submit,buy,fok,3,101,2,3\n"
+             "submit,buy,post_only,4,99,4,4\n");
+
+  const Captured run =
+      run_captured_stdout(lobsim::run_replay, {"replay", flow.str(), "--engine", "reference"});
+  ASSERT_EQ(run.code, 0) << run.err;
+  const auto summary = parse_summary(run.out);
+
+  EXPECT_EQ(summary.at("records"), "4");
+  EXPECT_EQ(summary.at("submits"), "4");
+  EXPECT_EQ(summary.at("types"), "limit=2 market=0 ioc=0 fok=1 post_only=1");
 }
 
 TEST(LobsimTools, ReplayWithoutDigestOmitsDigestLine) {
@@ -252,6 +328,15 @@ TEST(LobsimTools, UsageErrorsExitTwo) {
   EXPECT_EQ(run_captured_stderr(lobsim::run_gen,
                                 {"gen", "--orders", "10", "--seed", "1", "--out", "/tmp/x.bin",
                                  "--market-ratio", "0.6", "--ioc-ratio", "0.6"})
+                .code,
+            2);
+  EXPECT_EQ(run_captured_stderr(lobsim::run_gen, {"gen", "--orders", "10", "--seed", "1", "--out",
+                                                  "/tmp/x.bin", "--types", "quantum"})
+                .code,
+            2);
+  EXPECT_EQ(run_captured_stderr(lobsim::run_gen,
+                                {"gen", "--orders", "10", "--seed", "1", "--out", "/tmp/x.bin",
+                                 "--types", "all", "--market-ratio", "1.0"})
                 .code,
             2);
 
