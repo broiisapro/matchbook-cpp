@@ -114,7 +114,9 @@ services:
 
   client1:
     <<: *matchbook-image
-    entrypoint: ["/usr/local/bin/lob_md_listen"]
+    # stdbuf keeps the listener's periodic top-of-book lines visible in
+    # `docker compose logs`; stdout is block-buffered in a container otherwise.
+    entrypoint: ["/usr/bin/stdbuf", "-oL", "/usr/local/bin/lob_md_listen"]
     command: ["--udp-port", "9100", "--recovery", "publisher:9002", "--top", "5"]
     depends_on:
       publisher:
@@ -131,7 +133,7 @@ services:
 
   client2:
     <<: *matchbook-image
-    entrypoint: ["/usr/local/bin/lob_md_listen"]
+    entrypoint: ["/usr/bin/stdbuf", "-oL", "/usr/local/bin/lob_md_listen"]
     command: ["--udp-port", "9101", "--recovery", "publisher:9002", "--top", "5"]
     depends_on:
       publisher:
