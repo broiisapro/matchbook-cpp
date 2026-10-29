@@ -6,7 +6,6 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -252,6 +251,96 @@ class FakeGateway {
   std::thread thread_;
 };
 
+// ----------------------------------------------------------- recovery client
+
+class RecoveryClient {
+ public:
+  ~RecoveryClient() {
+    if (fd_ >= 0) {
+      ::close(fd_);
+    }
+  }
+
+  RecoveryClient() = default;
+  RecoveryClient(const RecoveryClient&) = delete;
+  RecoveryClient& operator=(const RecoveryClient&) = delete;
+
+  bool connect_to(std::uint16_t port) {
+    fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd_ < 0) {
+      return false;
+    }
+    pub::suppress_sigpipe(fd_);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(port);
+    if (::connect(fd_, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0) {
+      return false;
+    }
+    const int flags = ::fcntl(fd_, F_GETFL, 0);
+    return flags >= 0 && ::fcntl(fd_, F_SETFL, flags | O_NONBLOCK) == 0;
+  }
+
+  bool send_request(proto::Seq from, proto::Seq to, proto::Seq header_seq) {
+    std::array<std::byte, proto::RecoveryRequest::kWireSize> buffer{};
+    const std::size_t written = proto::encode(proto::RecoveryRequest{from, to}, header_seq, buffer);
+    if (written == 0) {
+      return false;
+    }
+    std::size_t sent = 0;
+    while (sent < written) {
+      const ssize_t result = ::send(fd_, buffer.data() + sent, written - sent, pub::kSendFlags);
+      if (result > 0) {
+        sent += static_cast<std::size_t>(result);
+        continue;
+      }
+      if (result < 0 && errno == EINTR) {
+        continue;
+      }
+      return false;
+    }
+    return true;
+  }
+
+  void drain() {
+    for (;;) {
+      std::array<std::byte, 4096> buffer{};
+      const ssize_t received = ::recv(fd_, buffer.data(), buffer.size(), 0);
+      if (received > 0) {
+        const auto span =
+            std::span<const std::byte>(buffer.data(), static_cast<std::size_t>(received));
+        if (framer_.push(span, sink_).result == proto::FramerResult::Error) {
+          closed_ = true;
+          return;
+        }
+        continue;
+      }
+      if (received == 0) {
+        closed_ = true;
+        return;
+      }
+      if (errno == EINTR) {
+        continue;
+      }
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        return;
+      }
+      closed_ = true;
+      return;
+    }
+  }
+
+  const std::vector<std::vector<std::byte>>& frames() const { return sink_.frames; }
+  bool closed() const { return closed_; }
+
+ private:
+  int fd_ = -1;
+  proto::StreamFramer framer_;
+  CollectingSink sink_;
+  bool closed_ = false;
+};
+
 // --------------------------------------------------------------- utilities
 
 template <class Done>
@@ -272,6 +361,23 @@ bool drive_with_receivers(pub::Publisher& publisher, const std::vector<UdpReceiv
   return done();
 }
 
+template <class Done>
+bool drive_recovery(pub::Publisher& publisher, RecoveryClient& client, Done done,
+                    int ticks = 4000) {
+  for (int tick = 0; tick < ticks; ++tick) {
+    publisher.poll_once(2ms);
+    client.drain();
+    if (done()) {
+      return true;
+    }
+    if (client.closed()) {
+      return false;
+    }
+  }
+  client.drain();
+  return done();
+}
+
 pub::PublisherConfig make_config(const FakeGateway& gateway,
                                  const std::vector<UdpReceiver*>& receivers,
                                  std::size_t retransmit_capacity = 256) {
@@ -280,6 +386,8 @@ pub::PublisherConfig make_config(const FakeGateway& gateway,
   for (const UdpReceiver* receiver : receivers) {
     config.udp_destinations.push_back(pub::Endpoint{"127.0.0.1", receiver->port()});
   }
+  config.recovery_bind_host = "127.0.0.1";
+  config.recovery_port = 0;
   config.retransmit_capacity = retransmit_capacity;
   config.reconnect_initial = 5ms;
   config.reconnect_max = 20ms;
@@ -361,6 +469,168 @@ TEST(PublisherDelivery, ReconnectsToTheGatewayWithBackoff) {
   expected.insert(expected.end(), second_batch.begin(), second_batch.end());
   expect_frames(receiver.frames(), expected);
   EXPECT_GE(publisher.stats().gateway_connections, 2U);
+}
+
+TEST(PublisherRecovery, RecoversAMidStreamGap) {
+  UdpReceiver receiver;
+  FakeGateway gateway;
+  const std::vector<UdpReceiver*> receivers{&receiver};
+
+  pub::Publisher publisher(make_config(gateway, receivers));
+  std::string error;
+  ASSERT_TRUE(publisher.open(error)) << error;
+
+  ASSERT_TRUE(
+      drive_with_receivers(publisher, receivers, [&] { return gateway.connections() >= 1; }));
+  const std::vector<std::vector<std::byte>> expected = make_stream(1, 30);
+  gateway.send_bytes(concatenate(expected));
+  ASSERT_TRUE(drive_with_receivers(publisher, receivers,
+                                   [&] { return receiver.frames().size() >= expected.size(); }));
+
+  RecoveryClient client;
+  ASSERT_TRUE(client.connect_to(publisher.recovery_port()));
+  ASSERT_TRUE(client.send_request(10, 14, 1));
+  ASSERT_TRUE(drive_recovery(publisher, client, [&] { return client.frames().size() >= 5; }));
+  ASSERT_EQ(client.frames().size(), 5U);
+  for (std::size_t index = 0; index < 5; ++index) {
+    EXPECT_EQ(client.frames()[index], expected[9 + index]) << "recovered frame " << index;
+  }
+
+  // The same connection serves a second request (framing is per stream).
+  ASSERT_TRUE(client.send_request(20, 22, 2));
+  ASSERT_TRUE(drive_recovery(publisher, client, [&] { return client.frames().size() >= 8; }));
+  ASSERT_EQ(client.frames().size(), 8U);
+  for (std::size_t index = 0; index < 3; ++index) {
+    EXPECT_EQ(client.frames()[5 + index], expected[19 + index]);
+  }
+}
+
+TEST(PublisherRecovery, SendsSequenceResetWhenTheStartIsGone) {
+  UdpReceiver receiver;
+  FakeGateway gateway;
+  const std::vector<UdpReceiver*> receivers{&receiver};
+
+  pub::Publisher publisher(make_config(gateway, receivers, 8));
+  std::string error;
+  ASSERT_TRUE(publisher.open(error)) << error;
+
+  ASSERT_TRUE(
+      drive_with_receivers(publisher, receivers, [&] { return gateway.connections() >= 1; }));
+  const std::vector<std::vector<std::byte>> expected = make_stream(1, 20);
+  gateway.send_bytes(concatenate(expected));
+  ASSERT_TRUE(drive_with_receivers(publisher, receivers,
+                                   [&] { return receiver.frames().size() >= expected.size(); }));
+
+  RecoveryClient client;
+  ASSERT_TRUE(client.connect_to(publisher.recovery_port()));
+  ASSERT_TRUE(client.send_request(1, 20, 1));
+  ASSERT_TRUE(drive_recovery(publisher, client, [&] { return client.frames().size() >= 1; }));
+  ASSERT_EQ(client.frames().size(), 1U);
+
+  proto::SequenceReset reset;
+  proto::Seq header_seq = 0;
+  ASSERT_EQ(proto::decode(client.frames()[0], reset, header_seq), proto::DecodeStatus::Ok);
+  EXPECT_EQ(reset.next_seq, 13U);  // 20 held messages, capacity 8 -> oldest is 13
+  EXPECT_EQ(publisher.stats().sequence_resets, 1U);
+
+  // Recovery resumes from the reset sequence.
+  ASSERT_TRUE(client.send_request(13, 15, 2));
+  ASSERT_TRUE(drive_recovery(publisher, client, [&] { return client.frames().size() >= 4; }));
+  ASSERT_EQ(client.frames().size(), 4U);
+  for (std::size_t index = 0; index < 3; ++index) {
+    EXPECT_EQ(client.frames()[1 + index], expected[12 + index]);
+  }
+}
+
+TEST(PublisherRecovery, RejectsMalformedRequestsByClosingTheConnection) {
+  UdpReceiver receiver;
+  FakeGateway gateway;
+  const std::vector<UdpReceiver*> receivers{&receiver};
+
+  pub::Publisher publisher(make_config(gateway, receivers, 8));
+  std::string error;
+  ASSERT_TRUE(publisher.open(error)) << error;
+
+  ASSERT_TRUE(
+      drive_with_receivers(publisher, receivers, [&] { return gateway.connections() >= 1; }));
+  gateway.send_bytes(concatenate(make_stream(1, 20)));
+  ASSERT_TRUE(
+      drive_with_receivers(publisher, receivers, [&] { return receiver.frames().size() >= 20; }));
+
+  struct Request {
+    proto::Seq from;
+    proto::Seq to;
+    const char* why;
+  };
+  const std::vector<Request> requests{
+      {5, 4, "reversed range"},
+      {0, 1, "zero sequence"},
+      {15, 23, "span larger than the store"},  // 15..23 inclusive is 9 > capacity 8
+  };
+  for (const Request& request : requests) {
+    RecoveryClient client;
+    ASSERT_TRUE(client.connect_to(publisher.recovery_port())) << request.why;
+    ASSERT_TRUE(client.send_request(request.from, request.to, 1)) << request.why;
+    ASSERT_TRUE(drive_recovery(publisher, client, [&] { return client.closed(); })) << request.why;
+    EXPECT_TRUE(client.frames().empty()) << request.why;
+  }
+  EXPECT_EQ(publisher.stats().rejected_recovery_requests, requests.size());
+}
+
+TEST(PublisherRecovery, ServesConcurrentRecoveriesWhilePublishingContinues) {
+  UdpReceiver receiver;
+  FakeGateway gateway;
+  const std::vector<UdpReceiver*> receivers{&receiver};
+
+  pub::Publisher publisher(make_config(gateway, receivers));
+  std::string error;
+  ASSERT_TRUE(publisher.open(error)) << error;
+
+  ASSERT_TRUE(
+      drive_with_receivers(publisher, receivers, [&] { return gateway.connections() >= 1; }));
+  const std::vector<std::vector<std::byte>> first = make_stream(1, 20);
+  gateway.send_bytes(concatenate(first));
+  ASSERT_TRUE(drive_with_receivers(publisher, receivers,
+                                   [&] { return receiver.frames().size() >= first.size(); }));
+
+  RecoveryClient alpha;
+  RecoveryClient beta;
+  ASSERT_TRUE(alpha.connect_to(publisher.recovery_port()));
+  ASSERT_TRUE(beta.connect_to(publisher.recovery_port()));
+  ASSERT_TRUE(alpha.send_request(2, 4, 1));
+  ASSERT_TRUE(beta.send_request(10, 12, 1));
+
+  for (int tick = 0; tick < 4000; ++tick) {
+    publisher.poll_once(2ms);
+    alpha.drain();
+    beta.drain();
+    if (alpha.frames().size() >= 3 && beta.frames().size() >= 3) {
+      break;
+    }
+  }
+  ASSERT_EQ(alpha.frames().size(), 3U);
+  ASSERT_EQ(beta.frames().size(), 3U);
+  for (std::size_t index = 0; index < 3; ++index) {
+    EXPECT_EQ(alpha.frames()[index], first[1 + index]);
+    EXPECT_EQ(beta.frames()[index], first[9 + index]);
+  }
+
+  // Live publishing keeps going while alpha stays connected.
+  const std::vector<std::vector<std::byte>> second = make_stream(21, 25);
+  gateway.send_bytes(concatenate(second));
+  ASSERT_TRUE(
+      drive_with_receivers(publisher, receivers, [&] { return receiver.frames().size() >= 25; }));
+
+  ASSERT_TRUE(alpha.send_request(21, 23, 2));
+  ASSERT_TRUE(drive_recovery(publisher, alpha, [&] { return alpha.frames().size() >= 6; }));
+  ASSERT_EQ(alpha.frames().size(), 6U);
+  for (std::size_t index = 0; index < 3; ++index) {
+    EXPECT_EQ(alpha.frames()[3 + index], second[index]);
+  }
+  // Beta received no extra frames: its stream is independent.
+  beta.drain();
+  EXPECT_EQ(beta.frames().size(), 3U);
+  EXPECT_EQ(publisher.stats().recovery_requests, 3U);
 }
 
 }  // namespace
