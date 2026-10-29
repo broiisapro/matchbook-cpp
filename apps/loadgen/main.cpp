@@ -74,8 +74,10 @@ int main(int argc, char** argv) {
   if (cli.md_udp_port != 0) {
     loadgen::MdMonitorOptions md_options;
     md_options.udp_port = cli.md_udp_port;
+    md_options.bind_address = cli.md_bind;
     md_options.recovery_host = cli.recovery.host;
     md_options.recovery_port = cli.recovery.port;
+    md_options.settle_timeout = cli.md_settle;
     md_monitor = loadgen::MdMonitor::start(md_options, error);
     if (md_monitor == nullptr) {
       std::cerr << "lob_loadgen: " << error << '\n';
@@ -125,7 +127,9 @@ int main(int argc, char** argv) {
   if (report.has_md) {
     std::cout << " md_received=" << report.md.received << " md_gaps=" << report.md.gaps_detected
               << " md_recovered=" << report.md.gaps_recovered
-              << " md_unrecovered=" << report.md.sequence_gaps_unrecovered;
+              << " md_final_seq=" << report.md.final_seq
+              << " md_highest_known_seq=" << report.md.highest_known_seq
+              << " md_unrecovered=" << report.md.unrecovered_gaps;
   }
   std::cout << " report=" << cli.report_path << '\n';
 

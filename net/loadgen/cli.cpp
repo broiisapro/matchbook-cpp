@@ -68,6 +68,9 @@ std::string usage() {
          "  --min-price P          lowest generated limit price (default 1)\n"
          "  --max-price P          highest generated limit price (default 200000)\n"
          "  --md-udp-port P        publisher UDP port to monitor (absent or 0 = no md counting)\n"
+         "  --md-bind ADDR         local address for the md socket (default 0.0.0.0)\n"
+         "  --md-settle-ms N       after the last response, keep draining the feed until it has\n"
+         "                         applied everything announced, up to N ms (default 2000)\n"
          "  --recovery HOST[:PORT] publisher recovery service for md gaps (default "
          "127.0.0.1:9002)\n"
          "  --help, -h             print this text\n";
@@ -216,6 +219,28 @@ CliStatus parse_cli(int argc, char** argv, CliOptions& out, std::string& error) 
           return CliStatus::Error;
         }
         options.md_udp_port = static_cast<std::uint16_t>(port);
+        return CliStatus::Ok;
+      }
+      if (argument == "--md-bind") {
+        const std::string_view value = value_ahead(argument);
+        if (value.empty()) {
+          return CliStatus::Error;
+        }
+        options.md_bind = std::string(value);
+        return CliStatus::Ok;
+      }
+      if (argument == "--md-settle-ms") {
+        const std::string_view value = value_ahead(argument);
+        if (value.empty()) {
+          return CliStatus::Error;
+        }
+        std::uint64_t settle_ms = 0;
+        if (!parse_u64(value, settle_ms) || settle_ms > 600000) {
+          error =
+              "--md-settle-ms must be a number between 0 and 600000: '" + std::string(value) + "'";
+          return CliStatus::Error;
+        }
+        options.md_settle = std::chrono::milliseconds(settle_ms);
         return CliStatus::Ok;
       }
       if (argument == "--recovery") {
