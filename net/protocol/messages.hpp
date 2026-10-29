@@ -121,9 +121,11 @@ inline constexpr std::uint8_t kWireSideSell = 1;
 inline constexpr std::uint8_t kMaxWireSide = kWireSideSell;
 
 /// Reject reasons are opaque to the gateway: the book owns their meaning. The
-/// range covers the values in RejectReason plus UnsupportedOrderType (C47).
+/// range covers every RejectReason, ending at WouldCross. The bound lives here
+/// rather than in the frozen types.hpp; the static_asserts below pin both ends
+/// of the enum so a new or renumbered reason cannot silently fall off the wire.
 inline constexpr std::uint8_t kMinWireRejectReason = 1;
-inline constexpr std::uint8_t kMaxWireRejectReason = 7;
+inline constexpr std::uint8_t kMaxWireRejectReason = 8;
 
 static_assert(static_cast<std::uint8_t>(Side::Buy) == kWireSideBuy);
 static_assert(static_cast<std::uint8_t>(Side::Sell) == kWireSideSell);
@@ -131,8 +133,14 @@ static_assert(static_cast<std::uint8_t>(OrderType::Limit) == kWireOrderTypeLimit
 static_assert(static_cast<std::uint8_t>(OrderType::Market) == kWireOrderTypeMarket);
 static_assert(static_cast<std::uint8_t>(OrderType::IOC) == kWireOrderTypeIoc);
 static_assert(static_cast<std::uint8_t>(RejectReason::DuplicateId) == 1);
+static_assert(static_cast<std::uint8_t>(RejectReason::UnknownOrder) == 2);
+static_assert(static_cast<std::uint8_t>(RejectReason::InvalidQuantity) == 3);
+static_assert(static_cast<std::uint8_t>(RejectReason::InvalidPrice) == 4);
+static_assert(static_cast<std::uint8_t>(RejectReason::CapacityExceeded) == 5);
 static_assert(static_cast<std::uint8_t>(RejectReason::ModifyNoChange) == 6);
-static_assert(kMaxWireRejectReason >= static_cast<std::uint8_t>(RejectReason::ModifyNoChange));
+static_assert(static_cast<std::uint8_t>(RejectReason::UnsupportedOrderType) == 7);
+static_assert(static_cast<std::uint8_t>(RejectReason::WouldCross) == kMaxWireRejectReason);
+static_assert(kMinWireRejectReason == static_cast<std::uint8_t>(RejectReason::DuplicateId));
 
 // Client -> gateway: place a new order. price is ignored for a market order
 // (callers send 0); qty is in lots.

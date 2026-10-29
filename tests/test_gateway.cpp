@@ -302,6 +302,77 @@ TEST_F(GatewayTest, CrossingOrdersFillBothSessions) {
   }
 }
 
+TEST_F(GatewayTest, CrossingPostOnlyOrderIsRejectedWithWouldCross) {
+  WireClient maker(port());
+  WireClient taker(port());
+  ASSERT_TRUE(maker.connected());
+  ASSERT_TRUE(taker.connected());
+
+  ASSERT_TRUE(maker.send(limit_order(31, lob::Side::Sell, 100, 5)));
+  ASSERT_TRUE(next_message<proto::Ack>(maker, proto::MessageType::Ack).has_value());
+
+  proto::NewOrder post_only = limit_order(32, lob::Side::Buy, 100, 5);
+  post_only.type = lob::OrderType::PostOnly;
+  ASSERT_TRUE(taker.send(post_only));
+
+  // WouldCross (wire value 8) is the last RejectReason and must survive the
+  // round trip; while the wire bound stopped at 7 the gateway could not send
+  // this rejection at all.
+  const std::optional<proto::Reject> reject =
+      next_message<proto::Reject>(taker, proto::MessageType::Reject);
+  ASSERT_TRUE(reject.has_value());
+  EXPECT_EQ(reject->order_id, 32u);
+  EXPECT_EQ(reject->reason, lob::RejectReason::WouldCross);
+  EXPECT_GE(static_cast<std::uint8_t>(reject->reason), proto::kMinWireRejectReason);
+  EXPECT_LE(static_cast<std::uint8_t>(reject->reason), proto::kMaxWireRejectReason);
+
+  // A rejection is the only response: no accept, no fill, no cancel.
+  EXPECT_FALSE(next_frame(taker, 50).has_value());
+  EXPECT_FALSE(taker.eof());
+  // The resting maker is untouched, so it is still there for the next taker.
+  EXPECT_FALSE(next_frame(maker, 50).has_value());
+  EXPECT_FALSE(maker.eof());
+}
+
+TEST_F(GatewayTest, FillOrKillThatCannotFillIsCancelledWithoutFilling) {
+  WireClient maker(port());
+  WireClient taker(port());
+  ASSERT_TRUE(maker.connected());
+  ASSERT_TRUE(taker.connected());
+
+  ASSERT_TRUE(maker.send(limit_order(41, lob::Side::Sell, 100, 3)));
+  ASSERT_TRUE(next_message<proto::Ack>(maker, proto::MessageType::Ack).has_value());
+
+  proto::NewOrder fok = limit_order(42, lob::Side::Buy, 100, 5);
+  fok.type = lob::OrderType::FOK;
+  ASSERT_TRUE(taker.send(fok));
+
+  const std::optional<proto::Ack> ack = next_message<proto::Ack>(taker, proto::MessageType::Ack);
+  ASSERT_TRUE(ack.has_value());
+  EXPECT_EQ(ack->order_id, 42u);
+  const std::optional<proto::Cancelled> cancelled =
+      next_message<proto::Cancelled>(taker, proto::MessageType::Cancelled);
+  ASSERT_TRUE(cancelled.has_value());
+  EXPECT_EQ(cancelled->order_id, 42u);
+  EXPECT_EQ(cancelled->qty, 5);
+  EXPECT_FALSE(next_frame(taker, 50).has_value());
+  EXPECT_FALSE(taker.eof());
+  // The kill happened before any trade: the maker's order never filled.
+  EXPECT_FALSE(next_frame(maker, 50).has_value());
+  EXPECT_FALSE(maker.eof());
+
+  // The book is unchanged, so a plain limit order for the maker's quantity
+  // still trades against it.
+  ASSERT_TRUE(taker.send(limit_order(43, lob::Side::Buy, 100, 3)));
+  ASSERT_TRUE(next_message<proto::Ack>(taker, proto::MessageType::Ack).has_value());
+  const std::optional<proto::Fill> fill =
+      next_message<proto::Fill>(taker, proto::MessageType::Fill);
+  ASSERT_TRUE(fill.has_value());
+  EXPECT_EQ(fill->maker_id, 41u);
+  EXPECT_EQ(fill->taker_id, 43u);
+  EXPECT_EQ(fill->qty, 3);
+}
+
 TEST_F(GatewayTest, CancelOfAnUnknownOrderIsRejected) {
   WireClient client(port());
   ASSERT_TRUE(client.connected());
