@@ -279,14 +279,14 @@ thread and one engine thread serve four clients in turn — but improve p99 from
 212 µs to 102 µs and throughput from 30,172 to 94,578 requests/s, because with
 several requests in flight neither process is idle long enough to be descheduled
 between a request and its response; the 2.9 ms max is one scheduling stall seen
-end to end. The closed loop is the important caveat:
-one request in flight per session means a slow response delays the next request
-instead of queueing behind it, so these are an interactive client's steady-state
-numbers and not a service time under load.
+end to end. The closed loop is the important caveat: one request in flight per
+session means a slow response delays the next request instead of queueing behind
+it, so these are an interactive client's steady-state numbers and not a service
+time under load.
 
 The ring half of the same run is published in the README's concurrency section
-and in the Epic 04 write-up; its numbers describe the handoff the gateway's two
-threads perform, without the sockets this table includes.
+and in the Epic 04 write-up; its numbers describe a single command handoff
+between two threads, without the sockets this table includes.
 
 ### The wiring test
 
