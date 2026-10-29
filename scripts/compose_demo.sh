@@ -143,4 +143,4 @@ else
   log "python3 not found; skipping the sequence-gap check"
 fi
 
-log "ok: demo completed with 0 unrecovered sequence gaps"
+log "ok: demo completed"
