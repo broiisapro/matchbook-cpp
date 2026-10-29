@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
                "lob_publisher: gateway %s, %zu UDP destination(s), multicast %s, "
                "recovery TCP port %u, retransmit %zu\n",
                gateway.c_str(), options.config.udp_destinations.size(), multicast.c_str(),
-               options.config.recovery_port, options.config.retransmit_capacity);
+               publisher.recovery_port(), options.config.retransmit_capacity);
 
   while (g_stop == 0) {
     publisher.poll_once(std::chrono::milliseconds(200));

@@ -1,11 +1,13 @@
 #pragma once
 
-// UDP market-data publisher.
+// UDP market-data publisher with a TCP recovery service.
 //
 // One Publisher runs one single-threaded poll loop: it connects to the
 // gateway's event stream, reads protocol frames, stores each one in a
 // preallocated retransmit ring, packs them into UDP datagrams and sends every
-// datagram to every destination. Reconnects use exponential backoff.
+// datagram to every destination. The same loop accepts recovery clients on
+// TCP, so a recovery response never blocks live publishing and several
+// subscribers can recover at once.
 //
 // The loop is exposed one step at a time (poll_once) so tests can drive it
 // deterministically against an in-process fake gateway and loopback receivers.
@@ -38,6 +40,8 @@ struct PublisherConfig {
   /// Optional extra destination for a multicast group. The publisher only
   /// sends; it never joins the group.
   std::optional<Endpoint> multicast_group;
+  /// Recovery listener address and port. Port 0 asks the kernel for an
+  /// ephemeral port; recovery_port() reports the bound one.
   std::string recovery_bind_host{"0.0.0.0"};
   std::uint16_t recovery_port = 9002;
   std::size_t retransmit_capacity = 65536;
@@ -58,6 +62,9 @@ struct PublisherStats {
   std::uint64_t gateway_connections = 0;
   std::uint64_t gateway_disconnects = 0;
   std::uint64_t protocol_errors = 0;
+  std::uint64_t recovery_requests = 0;
+  std::uint64_t sequence_resets = 0;
+  std::uint64_t rejected_recovery_requests = 0;
 };
 
 class Publisher : private net::FrameSink {
@@ -70,12 +77,14 @@ class Publisher : private net::FrameSink {
   Publisher(const Publisher&) = delete;
   Publisher& operator=(const Publisher&) = delete;
 
-  /// Opens the UDP destinations and resolves the gateway address. Idempotent.
-  /// On failure `error` explains which step failed and nothing is left open.
+  /// Opens the UDP destinations and the recovery listener and resolves the
+  /// gateway address. Idempotent. On failure `error` explains which step
+  /// failed and nothing is left open.
   bool open(std::string& error);
 
   /// Runs one iteration of the poll loop: tries to connect to the gateway when
-  /// it is due, waits up to `timeout` for I/O, then reads the gateway.
+  /// it is due, waits up to `timeout` for I/O, then services the gateway and
+  /// every recovery client.
   void poll_once(std::chrono::milliseconds timeout);
 
   /// Runs poll_once(200 ms) until stop() is called.
@@ -83,9 +92,19 @@ class Publisher : private net::FrameSink {
 
   void stop() { stop_.store(true, std::memory_order_relaxed); }
 
+  /// Actual recovery port after a bind to an ephemeral port (0 requested).
+  std::uint16_t recovery_port() const { return recovery_port_; }
+
   const PublisherStats& stats() const { return stats_; }
 
  private:
+  struct RecoveryClient {
+    int fd = -1;
+    StreamFramer framer;
+    std::vector<std::byte> output;  ///< queued response bytes
+    std::size_t output_offset = 0;  ///< bytes of output already sent
+  };
+
   bool on_frame(std::span<const std::byte> frame) override;
 
   void attempt_gateway_connect();
@@ -96,6 +115,12 @@ class Publisher : private net::FrameSink {
   bool on_gateway_frame(std::span<const std::byte> frame);
   void flush_datagrams();
 
+  void accept_recovery_clients();
+  bool service_recovery_client(std::size_t index, short revents);
+  bool flush_recovery_output(RecoveryClient& client);
+  bool queue_recovery_bytes(RecoveryClient& client, const std::byte* data, std::size_t size);
+  bool on_recovery_frame(RecoveryClient& client, std::span<const std::byte> frame);
+
   int poll_timeout_ms(std::chrono::milliseconds requested) const;
   void log(const char* text, const Endpoint& endpoint);
 
@@ -104,6 +129,11 @@ class Publisher : private net::FrameSink {
   DatagramPacker packer_;
   UdpSender udp_;
   PublisherStats stats_;
+
+  int recovery_listener_ = -1;
+  std::uint16_t recovery_port_ = 0;
+  std::vector<RecoveryClient> recovery_clients_;
+  std::size_t max_pending_recovery_bytes_ = 0;
 
   sockaddr_storage gateway_address_{};
   socklen_t gateway_address_length_ = 0;
@@ -115,6 +145,7 @@ class Publisher : private net::FrameSink {
   std::chrono::steady_clock::time_point connect_deadline_{};
   std::chrono::milliseconds backoff_{0};
 
+  RecoveryClient* recovery_target_ = nullptr;
   std::vector<std::byte> read_buffer_;
   std::atomic<bool> stop_{false};
   bool opened_ = false;
