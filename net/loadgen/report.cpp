@@ -75,7 +75,9 @@ void write_md(std::ostream& out, const MdSummary& md) {
   out << "    \"gaps_recovered\": " << md.gaps_recovered << ",\n";
   out << "    \"resets\": " << md.resets << ",\n";
   out << "    \"final_seq\": " << md.final_seq << ",\n";
-  out << "    \"sequence_gaps_unrecovered\": " << md.sequence_gaps_unrecovered << ",\n";
+  out << "    \"highest_known_seq\": " << md.highest_known_seq << ",\n";
+  out << "    \"unrecovered_gaps\": " << md.unrecovered_gaps << ",\n";
+  out << "    \"heartbeats\": " << md.heartbeats << ",\n";
   out << "    \"buffered_at_end\": " << md.buffered_at_end << ",\n";
   out << "    \"trades\": " << md.trades << ",\n";
   out << "    \"dropped\": " << md.dropped << ",\n";
@@ -166,8 +168,11 @@ std::string to_json(const Report& report) {
   out << "    \"in_flight_per_session\": 1,\n";
   out << "    \"market_data\": "
          "\"when md is present, a lob::md::FeedHandler receives the publisher's UDP stream on its "
-         "own thread for the duration of the run; sequence_gaps_unrecovered is 1 only when "
-         "out-of-order frames were still buffered when the stream went quiet, 0 otherwise\",\n";
+         "own thread for the duration of the run; after the last response it keeps draining until "
+         "it has applied every sequence number the stream announced, bounded by the md settle "
+         "budget. final_seq is the last sequence applied, highest_known_seq the last one the "
+         "stream announced (an idle heartbeat carries it), and unrecovered_gaps the difference: "
+         "0 means the local book is complete\",\n";
   out << "    \"coordinated_omission\": "
          "\"A closed-loop client paces the next send behind the previous response, so a slow "
          "response delays the next request instead of queueing behind it. The percentiles "

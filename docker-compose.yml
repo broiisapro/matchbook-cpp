@@ -9,23 +9,21 @@
 #
 # Topology: the gateway owns the book and serves the order-entry port (9000)
 # and an internal market-data event stream (9001). The publisher reads that
-# stream and pushes it to the two listeners over UDP (and to the load
-# generator, see below), while serving recovery on TCP 9002. The load generator
-# is a one-off: it is not started by `up`, only by `docker compose run`.
+# stream and pushes it to the two listeners and the load generator over UDP
+# (10.213.77.12:9100, 10.213.77.13:9101, 10.213.77.14:9100), while serving
+# recovery on TCP 9002. The load generator is a one-off: it is not started by
+# `up`, only by `docker compose run`.
 #
 # No host network and no published ports: everything talks over the private
 # bridge network, so the demo cannot collide with ports already in use on the
 # host. To reach the gateway from the host, add `ports: ["9000:9000"]`.
 #
-# The two listener addresses are static on purpose: the publisher resolves and
-# caches its UDP destinations when it starts, before Compose has created the
-# listeners, so service names would not resolve yet. Static addresses are
-# routable on the bridge from the first packet.
-#
-# The load generator's market-data monitor binds loopback (that is the
-# loadgen option default and there is no flag to widen it), so it shares the
-# publisher's network namespace and the publisher has a loopback destination
-# for it. Order entry still crosses the bridge to gateway:9000.
+# The listener and load-generator addresses are static on purpose: the publisher
+# resolves and caches its UDP destinations when it starts, before Compose has
+# created those containers, so service names would not resolve yet. Static
+# addresses are routable on the bridge from the first packet. The load
+# generator binds its market-data socket to 0.0.0.0 (the lob_loadgen default),
+# so it receives on that bridge address and on loopback.
 
 name: matchbook-cpp
 
@@ -87,7 +85,7 @@ services:
       - --udp-dest
       - 10.213.77.13:9101
       - --udp-dest
-      - 127.0.0.1:9100
+      - 10.213.77.14:9100
       - --recovery-port
       - "9002"
       - --retransmit
@@ -162,17 +160,15 @@ services:
       publisher:
         condition: service_healthy
     restart: "no"
-    # The load generator's market-data monitor binds loopback (net/loadgen
-    # MdMonitorOptions), so it shares the publisher's network namespace: the
-    # publisher's extra 127.0.0.1:9100 destination then reaches it directly.
-    # Order entry still goes to gateway:9000 over the bridge.
-    network_mode: "service:publisher"
+    networks:
+      demo:
+        ipv4_address: 10.213.77.14
     volumes:
       - loadgen-out:/out
     environment:
       LOB_LOADGEN_GATEWAY: gateway:9000
       LOB_LOADGEN_MD_PORT: "9100"
-      LOB_LOADGEN_RECOVERY: 127.0.0.1:9002
+      LOB_LOADGEN_RECOVERY: publisher:9002
 
 networks:
   demo:
