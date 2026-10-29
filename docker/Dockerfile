@@ -1,9 +1,10 @@
 # syntax=docker/dockerfile:1
 #
 # linux/arm64 image for the portable targets: the fast engine, the reference
-# engine, the flow-file tools, the operation generator, the wire protocol and
-# lobsim. The tests run during the build, so a broken Linux port fails the
-# image rather than shipping a binary nobody exercised.
+# engine, the flow-file tools, the operation generator, the wire protocol,
+# lobsim and the Phase 3 services (gateway, publisher, market-data listener and
+# load generator). The tests run during the build, so a broken Linux port fails
+# the image rather than shipping a binary nobody exercised.
 #
 # Build from the repository root (scripts/docker_build.sh does exactly this):
 #   docker build --platform linux/arm64 -f docker/Dockerfile -t matchbook-cpp:linux-arm64 .
@@ -55,32 +56,37 @@ COPY . /src
 # sits inside the source tree because tests locate committed fixtures
 # (tests/data/) by walking up from their working directory.
 #
-# Two Linux-only configure flags:
-#   CMAKE_CXX_SCAN_FOR_MODULES=OFF  the project uses no C++ modules and
-#       Ubuntu's clang package does not ship clang-scan-deps.
-#   -fsized-deallocation  include/lob/pool.hpp calls the sized aligned
-#       operator delete; libstdc++ declares that overload only when the
-#       compiler defines __cpp_sized_deallocation, while libc++ (macOS)
-#       declares it unconditionally. Tracked as a portability fix request.
+# One Linux-only configure flag: the project uses no C++ modules and Ubuntu's
+# clang package does not ship clang-scan-deps, so CMake's module scanner is
+# turned off. (The -fsized-deallocation workaround pool.hpp used to need went
+# away with #112, which deallocates through the unsized aligned operator
+# delete.) The runtime output directory is flattened so every executable,
+# including the apps/<name>/ ones, lands in /src/build for the COPY below.
 RUN cmake -S /src -B /src/build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_CXX_COMPILER=clang++ \
         -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
-        -DCMAKE_CXX_FLAGS=-fsized-deallocation \
+        -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=/src/build \
         -DCMAKE_TOOLCHAIN_FILE=/opt/vcpkg/scripts/buildsystems/vcpkg.cmake \
         -DVCPKG_TARGET_TRIPLET=arm64-linux \
         -DLOB_PRICE_LADDER=array
 
 # test_alloc is built too: ctest registers its tests, so leaving the binary out
-# would leave the suite unable to discover them.
+# would leave the suite unable to discover them. The four Phase 3 executables
+# are what docker-compose.yml runs; building them here means a Compose demo
+# can never pick up a stale or missing binary.
 RUN cmake --build /src/build --target \
-        lob lob_reference lob_flowfile lob_opgen lob_net lobsim lob_tests test_alloc
+        lob lob_reference lob_flowfile lob_opgen lob_net lobsim lob_tests test_alloc \
+        lob_gateway lob_publisher lob_md_listen lob_loadgen
 
 RUN ctest --test-dir /src/build --output-on-failure
 
 # ---------------------------------------------------------------------------
-# Runtime stage: just the CLI. `lobsim` is statically linked against zlib and
-# xxHash from vcpkg and needs only the C++ runtime.
+# Runtime stage: the CLI and the Phase 3 services. Everything is statically
+# linked against zlib, xxHash and the HDR histogram from vcpkg and needs only
+# the C++ runtime. bash is present in the Ubuntu base image and is what the
+# Compose health checks use (/dev/tcp and /proc/net), so nothing extra is
+# installed for them.
 # ---------------------------------------------------------------------------
 FROM ubuntu:${UBUNTU_VERSION} AS runtime
 
@@ -89,6 +95,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /src/build/lobsim /usr/local/bin/lobsim
+COPY --from=build /src/build/lob_gateway /usr/local/bin/lob_gateway
+COPY --from=build /src/build/lob_publisher /usr/local/bin/lob_publisher
+COPY --from=build /src/build/lob_md_listen /usr/local/bin/lob_md_listen
+COPY --from=build /src/build/lob_loadgen /usr/local/bin/lob_loadgen
+COPY --chmod=755 docker/loadgen-entrypoint.sh /usr/local/bin/loadgen-entrypoint
 
 ENTRYPOINT ["/usr/local/bin/lobsim"]
 CMD ["--help"]

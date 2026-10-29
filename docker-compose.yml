@@ -1,0 +1,185 @@
+# Phase 3 demo (decision C54, issue #127).
+#
+#   docker compose up -d --build
+#   docker compose run --rm loadgen --orders 1000000 --report /out/w2w.json
+#   docker compose down
+#
+# or scripts/compose_demo.sh, which runs exactly those three commands through
+# the heavy-command slot gate and prints the report.
+#
+# Topology: the gateway owns the book and serves the order-entry port (9000)
+# and an internal market-data event stream (9001). The publisher reads that
+# stream and pushes it to the two listeners over UDP (and to the load
+# generator, see below), while serving recovery on TCP 9002. The load generator
+# is a one-off: it is not started by `up`, only by `docker compose run`.
+#
+# No host network and no published ports: everything talks over the private
+# bridge network, so the demo cannot collide with ports already in use on the
+# host. To reach the gateway from the host, add `ports: ["9000:9000"]`.
+#
+# The two listener addresses are static on purpose: the publisher resolves and
+# caches its UDP destinations when it starts, before Compose has created the
+# listeners, so service names would not resolve yet. Static addresses are
+# routable on the bridge from the first packet.
+#
+# The load generator's market-data monitor binds loopback (that is the
+# loadgen option default and there is no flag to widen it), so it shares the
+# publisher's network namespace and the publisher has a loopback destination
+# for it. Order entry still crosses the bridge to gateway:9000.
+
+name: matchbook-cpp
+
+x-matchbook-image: &matchbook-image
+  image: matchbook-cpp:linux-arm64
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  platform: linux/arm64
+
+x-healthcheck-timing: &healthcheck-timing
+  interval: 2s
+  timeout: 2s
+  retries: 30
+  start_period: 2s
+
+services:
+  gateway:
+    <<: *matchbook-image
+    entrypoint: ["/usr/local/bin/lob_gateway"]
+    command:
+      - --port
+      - "9000"
+      - --md-port
+      - "9001"
+      - --min-price
+      - "1"
+      - --max-price
+      - "200000"
+      - --max-orders
+      - "1048576"
+      - --max-levels
+      - "200000"
+    restart: unless-stopped
+    stop_grace_period: 5s
+    networks:
+      demo:
+        ipv4_address: 10.213.77.10
+    healthcheck:
+      # Both listener ports, in one check: order entry and the event stream the
+      # publisher needs. The connection is closed immediately.
+      test:
+        [
+          "CMD",
+          "bash",
+          "-c",
+          "exec 3<>/dev/tcp/127.0.0.1/9000 && exec 4<>/dev/tcp/127.0.0.1/9001",
+        ]
+      <<: *healthcheck-timing
+
+  publisher:
+    <<: *matchbook-image
+    entrypoint: ["/usr/local/bin/lob_publisher"]
+    command:
+      - --gateway
+      - gateway:9001
+      - --udp-dest
+      - 10.213.77.12:9100
+      - --udp-dest
+      - 10.213.77.13:9101
+      - --udp-dest
+      - 127.0.0.1:9100
+      - --recovery-port
+      - "9002"
+      - --retransmit
+      - "100000"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 5s
+    networks:
+      demo:
+        ipv4_address: 10.213.77.11
+    healthcheck:
+      # An established connection to the gateway event stream (remote port
+      # 9001 = 0x2329) and the recovery listener (local port 9002 = 0x232A).
+      test:
+        [
+          "CMD",
+          "bash",
+          "-c",
+          "grep -qi ':2329 ' /proc/net/tcp /proc/net/tcp6 && grep -qi ':232A ' /proc/net/tcp /proc/net/tcp6",
+        ]
+      <<: *healthcheck-timing
+
+  client1:
+    <<: *matchbook-image
+    # stdbuf keeps the listener's periodic top-of-book lines visible in
+    # `docker compose logs`; stdout is block-buffered in a container otherwise.
+    entrypoint: ["/usr/bin/stdbuf", "-oL", "/usr/local/bin/lob_md_listen"]
+    command: ["--udp-port", "9100", "--recovery", "publisher:9002", "--top", "5"]
+    depends_on:
+      publisher:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 5s
+    networks:
+      demo:
+        ipv4_address: 10.213.77.12
+    healthcheck:
+      # A bound UDP socket on the listen port (9100 = 0x238C).
+      test: ["CMD", "bash", "-c", "grep -qi ':238C ' /proc/net/udp"]
+      <<: *healthcheck-timing
+
+  client2:
+    <<: *matchbook-image
+    entrypoint: ["/usr/bin/stdbuf", "-oL", "/usr/local/bin/lob_md_listen"]
+    command: ["--udp-port", "9101", "--recovery", "publisher:9002", "--top", "5"]
+    depends_on:
+      publisher:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 5s
+    networks:
+      demo:
+        ipv4_address: 10.213.77.13
+    healthcheck:
+      # A bound UDP socket on the listen port (9101 = 0x238D).
+      test: ["CMD", "bash", "-c", "grep -qi ':238D ' /proc/net/udp"]
+      <<: *healthcheck-timing
+
+  # One-off load generator. `docker compose run --rm loadgen ...` supplies the
+  # arguments; docker/loadgen-entrypoint.sh adds the demo endpoints (gateway,
+  # UDP listen port, recovery) when they are not given explicitly. The report
+  # volume survives `down`, so scripts/compose_demo.sh can read it afterwards.
+  loadgen:
+    <<: *matchbook-image
+    profiles: ["load"]
+    entrypoint: ["/usr/local/bin/loadgen-entrypoint"]
+    depends_on:
+      gateway:
+        condition: service_healthy
+      publisher:
+        condition: service_healthy
+    restart: "no"
+    # The load generator's market-data monitor binds loopback (net/loadgen
+    # MdMonitorOptions), so it shares the publisher's network namespace: the
+    # publisher's extra 127.0.0.1:9100 destination then reaches it directly.
+    # Order entry still goes to gateway:9000 over the bridge.
+    network_mode: "service:publisher"
+    volumes:
+      - loadgen-out:/out
+    environment:
+      LOB_LOADGEN_GATEWAY: gateway:9000
+      LOB_LOADGEN_MD_PORT: "9100"
+      LOB_LOADGEN_RECOVERY: 127.0.0.1:9002
+
+networks:
+  demo:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.213.77.0/24
+
+volumes:
+  loadgen-out:
