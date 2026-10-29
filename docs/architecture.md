@@ -209,7 +209,7 @@ Reserved bytes must be zero; encoders write them as zero and decoders reject a n
 
 `NewOrder.qty` is in lots and `price` in ticks; a market order sends price 0, which it ignores. `Modify.qty` is the new remaining quantity (not a delta). `BookUpdate.qty` is the new total at the level, 0 meaning the level is gone. `Cancelled.qty` is the quantity removed. `Fill.price` is the maker's resting price. `Heartbeat.nonce` is chosen by the client and echoed by the gateway's heartbeat, so the client can measure round-trip time. `SequenceReset.next_seq` is the first sequence number the subscriber should expect next; `RecoveryRequest` asks for the frames in `[from_seq, to_seq]` inclusive.
 
-Enum-valued fields use the wire values of `Side`, `OrderType` and `RejectReason` from `lob/types.hpp`: side 0 buy / 1 sell; order type 0 limit, 1 market, 2 IOC, 3 FOK, 4 post-only (the last two are reserved by decision C47 and gain semantics in Epic 06); reject reason 1–7, covering `RejectReason` plus `UnsupportedOrderType`. Decoders reject a side, order type or reason outside those ranges.
+Enum-valued fields use the wire values of `Side`, `OrderType` and `RejectReason` from `lob/types.hpp`: side 0 buy / 1 sell; order type 0 limit, 1 market, 2 IOC, 3 FOK, 4 post-only (the last two are reserved by decision C47 and gain semantics in Epic 06); reject reason 1–8, one for every `RejectReason` value from `DuplicateId` (1) through `WouldCross` (8). Decoders reject a side, order type or reason outside those ranges.
 
 ### 14.3 Validation and framing
 

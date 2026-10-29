@@ -356,7 +356,7 @@ TEST(ProtocolMessages, DecodeRejectsOutOfRangeEnums) {
     EXPECT_EQ(proto::decode(std::span<const std::byte>(bytes), decoded, seq),
               proto::DecodeStatus::InvalidField);
   }
-  for (const std::uint8_t reason : {std::uint8_t{0}, std::uint8_t{8}, std::uint8_t{255}}) {
+  for (const std::uint8_t reason : {std::uint8_t{0}, std::uint8_t{9}, std::uint8_t{255}}) {
     auto bytes = encoded(proto::Reject{1, lob::RejectReason::DuplicateId}, 5);
     bytes[kHeader + proto::Reject::kReasonOffset] = static_cast<std::byte>(reason);
     proto::Reject decoded{};
@@ -380,13 +380,39 @@ TEST(ProtocolMessages, AcceptsReservedOrderTypeValues) {
               proto::DecodeStatus::Ok);
     EXPECT_EQ(static_cast<std::uint8_t>(decoded.type), type);
   }
-  // The highest reject reason (7, UnsupportedOrderType after C47) is valid.
+  // The highest reject reason (8, WouldCross) is valid and decodes back to the
+  // enum value; see RoundTripsEveryRejectReason for the whole range.
   auto bytes = encoded(proto::Reject{1, lob::RejectReason::DuplicateId}, 5);
-  bytes[kHeader + proto::Reject::kReasonOffset] = std::byte{7};
+  bytes[kHeader + proto::Reject::kReasonOffset] = std::byte{proto::kMaxWireRejectReason};
   proto::Reject decoded{};
   proto::Seq seq = 0;
   EXPECT_EQ(proto::decode(std::span<const std::byte>(bytes), decoded, seq),
             proto::DecodeStatus::Ok);
+  EXPECT_EQ(decoded.reason, lob::RejectReason::WouldCross);
+}
+
+TEST(ProtocolMessages, RoundTripsEveryRejectReason) {
+  // Every value of RejectReason must survive a round trip: the gateway now
+  // sends WouldCross for a post-only order that would cross, and a bound that
+  // stopped short of the last enumerator would fail to encode it.
+  constexpr std::array<lob::RejectReason, 8> kReasons{
+      lob::RejectReason::DuplicateId,          lob::RejectReason::UnknownOrder,
+      lob::RejectReason::InvalidQuantity,      lob::RejectReason::InvalidPrice,
+      lob::RejectReason::CapacityExceeded,     lob::RejectReason::ModifyNoChange,
+      lob::RejectReason::UnsupportedOrderType, lob::RejectReason::WouldCross,
+  };
+  for (const lob::RejectReason reason : kReasons) {
+    SCOPED_TRACE(static_cast<int>(reason));
+    proto::Reject message{99, reason};
+    expect_round_trip(message, 42);
+
+    const auto bytes = encoded(message, 42);
+    EXPECT_EQ(static_cast<std::uint8_t>(bytes[kHeader + proto::Reject::kReasonOffset]),
+              static_cast<std::uint8_t>(reason));
+    EXPECT_GE(static_cast<std::uint8_t>(reason), proto::kMinWireRejectReason);
+    EXPECT_LE(static_cast<std::uint8_t>(reason), proto::kMaxWireRejectReason);
+  }
+  EXPECT_EQ(static_cast<std::uint8_t>(kReasons.back()), proto::kMaxWireRejectReason);
 }
 
 TEST(ProtocolMessages, DecodeHeader) {
