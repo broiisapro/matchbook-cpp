@@ -5,36 +5,52 @@ matchbook-cpp is a single-instrument limit order book and matching engine in C++
 ## 1. Repository layout
 
 ```
-CMakeLists.txt  CMakePresets.json  vcpkg.json  vcpkg-configuration.json (optional)
-.clang-format  .clang-tidy  .python-version  .gitignore
+CMakeLists.txt  CMakePresets.json  vcpkg.json
+.clang-format  .clang-tidy  .python-version  .gitignore  .dockerignore
+pyproject.toml  uv.lock                      Python workspace for the report scripts and the bindings
+docker-compose.yml  docker/                  Phase 3 image and demo topology (§15, docs/epic-10)
+.github/workflows/                           ci.yml, hygiene.yml, nightly.yml (§12)
 include/lob/
   types.hpp           Price, Qty, OrderId, Side, OrderType, RejectReason   (frozen after Epic 0)
   config.hpp          Config {min_price, max_price, max_orders, max_levels}  (frozen after Epic 0)
   listener.hpp        abstract Listener + NullListener                       (frozen after Epic 0)
   digest.hpp          DigestBuilder (byte spec §5)                            (frozen after Epic 0)
   order_book.hpp      OrderBook public API                                    (API frozen after Epic 0)
-  pool.hpp            fixed-capacity object pool + PoolAllocator              (WS A)
-  intrusive_list.hpp  intrusive doubly linked FIFO                            (WS A)
-  id_map.hpp          open-addressing OrderId -> pool index                   (WS A)
-  price_ladder.hpp    price-level container                                   (WS A)
-src/order_book.cpp    fast engine                                             (WS A)
-reference/reference_book.hpp/.cpp   naive reference engine, test-only target  (WS B)
-tools/flowfile/       flow record spec (Epic 0) + binary/CSV reader/writer    (WS C)
-tools/opgen/          seeded random operation generator                       (WS B)
-tools/lobsim/         CLI: gen, replay, difftest, convert-tardis              (WS B: difftest.cpp; WS C: the rest)
-bench/                Google Benchmark suites + HDR harness                   (WS D)
-tests/                GoogleTest unit, differential, allocation tests; tests/data/ fixtures
-scripts/              bootstrap_vcpkg.sh; bench_report.py, tardis_*.py (uv)
+  pool.hpp            fixed-capacity object pool + PoolAllocator
+  intrusive_list.hpp  intrusive doubly linked FIFO
+  id_map.hpp          open-addressing OrderId -> pool index
+  price_ladder.hpp    price-level container over either ladder implementation
+  array_ladder.hpp    array ladder + two-level occupancy bitmap (§7, Epic 2)
+  spsc_ring.hpp       header-only single-producer single-consumer ring buffer (Epic 04)
+src/order_book.cpp    fast engine
+reference/reference_book.hpp/.cpp   naive reference engine, test-only target
+net/protocol/         wire protocol: message table, byte codec, stream framer (§14)
+net/gateway/          gateway: network thread, engine thread and the three rings (§15.1)
+net/publisher/        UDP publisher, retransmit store and recovery service (§15.4)
+net/md_client/        feed handler: gap detection, recovery and a local book (§15.5)
+net/loadgen/          load generator: sessions, order flow, HDR latency and the JSON report
+apps/<name>/          thin executables — gateway, publisher, md_listen, loadgen — each with
+                      its own CMakeLists.txt, added by a root hook
+tools/flowfile/       flow record spec (Epic 0) + binary/CSV reader/writer
+tools/opgen/          seeded random operation generator
+tools/lobsim/         CLI: gen, replay, difftest, convert-tardis
+tools/spsc/           spsc_stress (soak) and spsc_latency (enqueue-to-callback, Epic 04)
+python/pylob/         Python bindings (Epic 05); examples/replay_spread.py
+bench/                Google Benchmark suites + HDR harness
+tests/                GoogleTest unit, differential, allocation and component tests; tests/data/ fixtures
+scripts/              bootstrap_vcpkg.sh, e2e_local.sh, compose_demo.sh, docker_build.sh,
+                      run_benchmarks.sh, run_phase23_benchmarks.sh, bench_report.py,
+                      phase23_report.py, tardis_*.py (uv)
 docs/                 architecture.md, epic-NN-<slug>.md
 ```
 
-CMake targets (all defined in Epic 0 with placeholder sources): `lob` (static library), `lob_reference` (static, test-only), `lob_flowfile`, `lob_opgen`, `lobsim` (exe), `lob_bench` (exe), `lob_tests` (gtest exe), `test_alloc` (separate gtest exe, because it replaces global operator new). Every target compiles with `-Wall -Wextra -Wpedantic -Werror`. Test, bench, reference, opgen and flowfile targets collect sources with `file(GLOB ... CONFIGURE_DEPENDS)` so adding a file never requires editing `CMakeLists.txt`.
+CMake targets: `lob` (static library), `lob_reference` (static, test-only), `lob_flowfile`, `lob_opgen`, `lobsim_core` plus the `lobsim` executable, `lob_net` (the §14 protocol and the Phase 3 service libraries; links `lob`), the four Phase 3 executables `lob_gateway`, `lob_publisher`, `lob_md_listen` and `lob_loadgen`, `lob_bench` (exe), `spsc_stress` and `spsc_latency` (exes), `lob_tests` (gtest exe), `test_alloc` (separate gtest exe, because it replaces global operator new). Every target compiles with `-Wall -Wextra -Wpedantic -Werror`. Test, bench, reference, opgen, net and flowfile targets collect sources with `file(GLOB ... CONFIGURE_DEPENDS)`, and a root hook adds every `apps/<name>/CMakeLists.txt`, so adding a file or an app never requires editing `CMakeLists.txt`. `LOB_PRICE_LADDER` selects the ladder (`array` by default, `tree` for the baseline, §7); `LOB_BUILD_BENCH` (on by default) gates `lob_bench` and `spsc_latency`, the two targets that include the macOS timer. `ctest` registers the Phase 3 wiring test (`E2E.LocalWiring`, §15) when all four Phase 3 executables exist.
 
 ## 2. Build and toolchain
 
 - Apple clang from Xcode (currently Xcode 27.1 / Apple clang 21), C++20, CMake ≥ 3.28 (Homebrew currently ships 4.4.x), Ninja.
-- `CMakePresets.json` `"version": 8`. Configure presets: `release` (`-O3 -DNDEBUG`, `-march`/`-mcpu=native` NOT used so numbers are reproducible on any Apple Silicon; flags printed by the bench), `debug`, `asan` (`-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer`), `tsan` (`-O1 -g -fsanitize=thread`). Matching build and test presets. Binary dirs `build/<preset>`.
-- vcpkg manifest mode, `builtin-baseline` `9e593bb18ea69cc5095e012465dcd675a822ed0d` (release 2026.07.29): `gtest` 1.17.0, `benchmark` 1.9.5, `hdr-histogram` 0.11.10, `xxhash` 0.8.3. `scripts/bootstrap_vcpkg.sh` does a full clone of microsoft/vcpkg into `./vcpkg`, checks out the pinned commit and runs `bootstrap-vcpkg.sh -disableMetrics`; idempotent. Presets set `CMAKE_TOOLCHAIN_FILE` to `${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake`. If the `VCPKG_ROOT` environment variable is set, the bootstrap script clones/verifies the pinned vcpkg there and symlinks `./vcpkg` to it (CI and worktrees share one clone); it is safe to run concurrently (mkdir-based lock).
+- `CMakePresets.json` `"version": 8`. Configure presets: `release` (`-O3 -DNDEBUG`, `-march`/`-mcpu=native` NOT used so numbers are reproducible on any Apple Silicon; flags printed by the bench), `debug`, `asan` (`-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer`), `tsan` (`-O1 -g -fsanitize=thread`), `release-tree` and `release-array` (the release build with `LOB_PRICE_LADDER` pinned to `tree` or `array`, so a persistent build cache cannot keep an old choice), and `linux-release` (the Linux arm64 port: `arm64-linux` triplet, `clang++`, `LOB_BUILD_BENCH=OFF`). Matching build and test presets. Binary dirs `build/<preset>`.
+- vcpkg manifest mode, `builtin-baseline` `9e593bb18ea69cc5095e012465dcd675a822ed0d` (release 2026.07.29): `gtest` 1.17.0, `benchmark` 1.9.5, `hdr-histogram` 0.11.10, `xxhash` 0.8.3, `zlib` 1.3.2. `scripts/bootstrap_vcpkg.sh` does a full clone of microsoft/vcpkg into `./vcpkg`, checks out the pinned commit and runs `bootstrap-vcpkg.sh -disableMetrics`; idempotent. Presets set `CMAKE_TOOLCHAIN_FILE` to `${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake`. If the `VCPKG_ROOT` environment variable is set, the bootstrap script clones/verifies the pinned vcpkg there and symlinks `./vcpkg` to it (CI and worktrees share one clone); it is safe to run concurrently (mkdir-based lock).
 - Formatting: `uvx clang-format==23.1.3` (exact pin, same locally and in CI). clang-tidy from Homebrew `llvm`, advisory.
 - Fallback if vcpkg bootstrap fails on runners (risk 3): pinned `Brewfile`; recorded as a decision if used.
 
@@ -43,7 +59,7 @@ CMake targets (all defined in Epic 0 with placeholder sources): `lob` (static li
 - `using Price = std::int64_t; using Qty = std::int64_t; using OrderId = std::uint64_t;`
 - `enum class Side : std::uint8_t { Buy = 0, Sell = 1 };`
 - `enum class OrderType : std::uint8_t { Limit = 0, Market = 1, IOC = 2, FOK = 3, PostOnly = 4 };` (Phase 2 appended FOK and PostOnly; values never renumbered.)
-- `enum class RejectReason : std::uint8_t { DuplicateId = 1, UnknownOrder, InvalidQuantity, InvalidPrice, CapacityExceeded, ModifyNoChange, UnsupportedOrderType, WouldCross };` (values appended, never renumbered.)
+- `enum class RejectReason : std::uint8_t { DuplicateId = 1, UnknownOrder, InvalidQuantity, InvalidPrice, CapacityExceeded, ModifyNoChange, UnsupportedOrderType, WouldCross };` (values appended, never renumbered. `UnsupportedOrderType` keeps its wire value but no engine emits it since Epic 06 implemented FOK and PostOnly.)
 - `struct Config { Price min_price; Price max_price; std::uint32_t max_orders; std::uint32_t max_levels; };` Both engines enforce the same limits (§4.1), so they stay comparable even when limits bite.
 
 ## 4. Event contract (authoritative for both engines)
@@ -63,7 +79,7 @@ Callbacks are synchronous and must not call back into the book. Debug builds ass
 
 ### 4.1 `submit(OrderId id, Side side, OrderType type, Price price, Qty qty)`
 Validation, in this order, first failure wins, nothing else is emitted:
-0. `FOK` and `PostOnly` are supported: their validation and matching are §4.1.1 and §4.1.2, which start from steps 1–3 below. (While Phase 2 rolled out, before Epic 06, both were rejected here with `UnsupportedOrderType` — interim behaviour, decision C47.)
+0. `FOK` and `PostOnly` are supported; their validation and matching are §4.1.1 and §4.1.2, which start from steps 1–3 below.
 1. `qty <= 0` → `on_reject(id, InvalidQuantity)`.
 2. Limit, IOC, FOK or PostOnly with `price < min_price || price > max_price` → `on_reject(id, InvalidPrice)`. Market orders ignore `price` (callers pass 0).
 3. `id` is a live resting order → `on_reject(id, DuplicateId)`. (Ids of filled or cancelled orders may be reused.)
@@ -76,22 +92,18 @@ Then:
    - Limit: if capacity allows, rest at the back of its price level and emit `on_book_update(side, price, new level qty)`. If capacity does not allow, emit `on_cancel(id, remainder)` (the order was accepted and may have traded; the unrestable remainder is cancelled). Tested identically in both engines.
    - Market or IOC: `on_cancel(id, remainder)`.
 
-### 4.1.1 `FOK` — fill or kill (final semantics, implemented in Epic 06)
+### 4.1.1 `FOK` — fill or kill
 
-**Interim (superseded in Epic 06):** rejected at validation step 0 with `UnsupportedOrderType`, in both engines, exactly as written in §4.1. Nothing else is emitted and the book is untouched.
-
-**Final:** a limit order that must fill completely and immediately against the resting book or not trade at all.
+A FOK is a limit order that must fill completely and immediately against the resting book or not trade at all.
 1. Validation is the §4.1 sequence with the FOK price bounds of step 2. Duplicate id, quantity and price rejects are unchanged.
 2. `on_accept(id)` is emitted before any trade.
 3. The kill check runs before the first trade is emitted: the available crossing quantity is the total quantity resting at opposite levels that the order crosses at its limit price (buy: every ask level `<= price`; sell: every bid level `>= price`). If that total is less than the submitted quantity, the order is killed: `on_accept(id)` is followed by `on_cancel(id, qty)` — the full submitted quantity, which never rested — and no `on_trade` or `on_book_update` is emitted. The book is unchanged.
 4. If the crossing quantity is enough, the fill is performed exactly as in §4.1 step 5, in price-time priority, until the full quantity is filled. The event sequence is then identical to an IOC of the same side, price and quantity that fully fills: `on_accept`, one `on_trade` plus `on_book_update` per maker touched, no `on_cancel`.
 5. A FOK order never rests and never hits the `max_orders` / `max_levels` capacity path: a fully filled FOK leaves nothing behind, and a killed FOK is cancelled as above.
 
-### 4.1.2 `PostOnly` — rest or reject (final semantics, implemented in Epic 06)
+### 4.1.2 `PostOnly` — rest or reject
 
-**Interim (superseded in Epic 06):** rejected at validation step 0 with `UnsupportedOrderType`, in both engines, exactly as written in §4.1. `RejectReason::WouldCross` existed in the enum already, so the final path needed no enum change.
-
-**Final:** a limit order that is only allowed to add liquidity.
+A PostOnly order is a limit order that is only allowed to add liquidity.
 1. Validation is the §4.1 sequence with the PostOnly price bounds of step 2. Duplicate id, quantity and price rejects are unchanged.
 2. If the order would cross on arrival — i.e. the opposite side's best price crosses the limit price at submit time (buy: `best_ask <= price`; sell: `best_bid >= price`) — it is rejected with `on_reject(id, WouldCross)`. Nothing else is emitted: no `on_accept`, no trade, no book update, and the id is not resting.
 3. Otherwise it rests exactly like a limit order: `on_accept(id)` and then §4.1 step 6 for the full quantity, including the capacity rule (if `max_orders` or `max_levels` forbids resting, `on_cancel(id, qty)`).
@@ -162,18 +174,18 @@ Submit types are selected with `--types basic|all` (default `basic`). `all` turn
 
 ## 11. Benchmarks (WS D)
 
-- `lob_bench` (Google Benchmark): AddOrder (non-crossing), AddOrderCrossing (1–3 levels), Cancel, MarketOrder, MixedFlow (throughput). Book prepopulated before timing; pools sized so warm-up touches all memory.
-- Latency percentiles: a separate harness records into HdrHistogram (1 ns – 10 ms, 3 sig figs). At startup it reads and prints the counter frequency. If ≥ 1 GHz: per-op timestamps (`isb` + `cntvct_el0` or `mach_absolute_time`) minus measured timer overhead. Otherwise: batches of 16 ops ÷ 16, labelled. Reports p50/p90/p99/p99.9/max, ≥ 5 repetitions, median run; JSON to `build/release/bench.json`.
-- `scripts/bench_report.py` (uv) renders the Markdown table with CPU model, OS, compiler version, flags, run count, timer frequency, and the macOS caveat (no core isolation or pinning; QoS hint only).
-- Published numbers are taken on an otherwise idle machine (no concurrent builds or CI jobs).
+- `lob_bench` (Google Benchmark): `AddOrder_NonCrossing`, `AddOrder_Crossing` and `Market_Sweep` (1–3 levels swept), `Cancel_Resting`, `MixedFlow` (throughput). Book prepopulated before timing; pools sized so warm-up touches all memory. `--self-test` checks the harness itself against calibrated delays.
+- Latency percentiles: a separate harness records into HdrHistogram (1 ns – 10 ms, 3 sig figs). At startup it prints the counter, its frequency, the timer overhead and the counter's measured update step (the smallest non-zero delta between back-to-back reads frequent enough to be real, over one million reads). Per-operation timestamps (`isb` + `cntvct_el0` or `mach_absolute_time`) are only used when that step is at most 2 ns; otherwise every sample is the average over a batch of N operations, with N the smallest power of two of at least 16 (capped at 1024) whose calibrated operation estimate spans 50 timer steps, labelled `batchN`. `--latency-mode=auto|per_op|batchN` overrides the choice. Reports p50/p90/p99/p99.9/max and the mean, ≥ 5 repetitions, median run; the JSON written next to the executable (`build/release/bench.json` by default) carries `p50_ns`, `p90_ns`, `p99_ns`, `p999_ns`, `max_ns`, `mean_ns`, `mode` and `batch_size` per benchmark.
+- `scripts/bench_report.py` (uv) renders the Markdown table with CPU model, OS, compiler version, flags, run count, timer frequency, latency mode and granularity, and the macOS caveat (no core isolation or pinning; QoS hint only).
+- `scripts/run_benchmarks.sh` is the only sanctioned way to produce publishable numbers: it refuses to start on a busy machine, runs five repetitions and renders the report; `--compare` builds the `release-tree` and `release` presets and emits the before/after table. Published numbers are taken on an otherwise idle machine (no concurrent builds or CI jobs).
 
 ## 12. CI
 
-GitHub Actions on self-hosted runners (`runs-on: [self-hosted, macOS, ARM64]`), concurrency group per branch with cancel-in-progress. Jobs: `build`, `test`, `asan`, `format`, `hygiene`, `tidy` (advisory). `hygiene` (separate workflow, also runs when a PR is edited) fails if the PR title, body or any commit message in the PR matches the patterns stored in repository variables, or if a commit's author/committer email differs from the expected identity variable. The patterns live only in repository variables, never in the repository. vcpkg uses the runner-local binary cache. After public ship: GitHub-hosted macOS ARM64 runners (`macos-26` or `xcode-27`).
+GitHub Actions. The macOS jobs run on GitHub-hosted `macos-26` runners; their label list comes from the repository variable `CI_RUNS_ON` (falling back to the old `[self-hosted, macOS, ARM64]` set), and the Linux jobs run on `ubuntu-24.04-arm`. Because a hosted runner starts every job with an empty workspace, each one restores ccache and the vcpkg binary archives with `actions/cache`. Concurrency is per event: a pull request gets one group per branch and a new push cancels the run it replaced, while a push to `main` gets one group per commit and never cancels, so every merged commit keeps the run that proved it green. Jobs: `build`, `test` (release build, `ctest`, and the Python binding tests), `asan`, `tsan`, `linux` (`linux-release` preset, the whole portable tree and the full `ctest`), `docker` (image build, path-filtered on pull requests), `format` (clang-format check and the script tests), `hygiene` (separate workflow, also runs when a PR is edited), and `tidy` (advisory, manual dispatch only). Required on `main`: `build`, `test`, `asan`, `format`, `hygiene` and `tsan`; `linux` and `docker` are added to that set after their green streak on `main` (decision C55). `nightly` runs the long differential test (both ladders, both type mixes, five seeds) on a schedule and on dispatch; it is not a required check, and benchmarks never run in CI. `hygiene` fails if the PR title, body or any commit message in the PR matches the patterns stored in repository variables, or if a commit's author/committer email differs from the expected identity variable. The patterns live only in repository variables, never in the repository.
 
 ## 13. Testing strategy
 
-Unit tests per component; the classic-bug tests named in the PRD; the differential test; the allocation test (`test_alloc` binary, global operator new/delete replaced, counting armed only around the hot loop, skipped under sanitizers); ASan+UBSan run of the full suite in CI; determinism check (debug vs release digests on the same flow).
+Unit tests per component; the classic-bug tests named in the PRD; the differential test; the end-to-end wiring test (§15: the four Phase 3 executables on loopback, registered as `E2E.LocalWiring`); the allocation test (`test_alloc` binary, global operator new/delete replaced, counting armed only around the hot loop, skipped under sanitizers); ASan+UBSan and TSan runs of the full suite in CI, plus the same suite on arm64 Linux and in the Docker image (§12); determinism check (debug vs release digests on the same flow).
 
 ## 14. Wire protocol (Phase 3)
 
@@ -211,7 +223,7 @@ Reserved bytes must be zero; encoders write them as zero and decoders reject a n
 
 `NewOrder.qty` is in lots and `price` in ticks; a market order sends price 0, which it ignores. `Modify.qty` is the new remaining quantity (not a delta). `BookUpdate.qty` is the new total at the level, 0 meaning the level is gone. `Cancelled.qty` is the quantity removed. `Fill.price` is the maker's resting price. `Heartbeat.nonce` is chosen by the client and echoed by the gateway's heartbeat, so the client can measure round-trip time. `SequenceReset.next_seq` is the first sequence number the subscriber should expect next; `RecoveryRequest` asks for the frames in `[from_seq, to_seq]` inclusive.
 
-Enum-valued fields use the wire values of `Side`, `OrderType` and `RejectReason` from `lob/types.hpp`: side 0 buy / 1 sell; order type 0 limit, 1 market, 2 IOC, 3 FOK, 4 post-only (the last two are reserved by decision C47 and gain semantics in Epic 06); reject reason 1–8, one for every `RejectReason` value from `DuplicateId` (1) through `WouldCross` (8). Decoders reject a side, order type or reason outside those ranges.
+Enum-valued fields use the wire values of `Side`, `OrderType` and `RejectReason` from `lob/types.hpp`: side 0 buy / 1 sell; order type 0 limit, 1 market, 2 IOC, 3 FOK, 4 post-only (the last two have full semantics since Epic 06, §4.1.1–§4.1.2); reject reason 1–8, one for every `RejectReason` value from `DuplicateId` (1) through `WouldCross` (8). Decoders reject a side, order type or reason outside those ranges.
 
 ### 14.3 Validation and framing
 
