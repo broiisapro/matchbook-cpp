@@ -37,9 +37,8 @@ published latency results come from the idle-machine run described in Epic 09.
    histogram), so the base image's C++ runtime and libc are all it needs;
    nothing is installed in this stage, which also means it needs no package
    downloads (PR #167 removed the last apt layer). It contains the stripped
-   `lobsim`,
-   `lob_gateway`, `lob_publisher`, `lob_md_listen`, `lob_loadgen` and the
-   `loadgen-entrypoint` script; its default entrypoint is `lobsim`, so the
+   `lobsim`, `lob_gateway`, `lob_publisher`, `lob_md_listen`, `lob_loadgen` and
+   the `loadgen-entrypoint` script; its default entrypoint is `lobsim`, so the
    existing `docker run <image> difftest …` usage still works.
 
 The benchmark binary and the SPSC latency harness are deliberately absent: both
