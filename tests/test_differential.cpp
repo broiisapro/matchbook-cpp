@@ -50,6 +50,15 @@ TEST(FastVsReference, RandomOpsMatchReference) {
   expect_match(config, 20261018, kSanitized ? 100000 : 1000000);
 }
 
+// Phase 2 order types: FOK and PostOnly are part of the generated stream,
+// including PostOnly orders priced through the book, so the accept, kill,
+// WouldCross and rest paths all run through the differential harness. This is
+// the all-types companion of RandomOpsMatchReference.
+TEST(FastVsReference, RandomOpsMatchReferenceAllTypes) {
+  constexpr Config config{100, 200, 128, 32};
+  expect_match(config, 20261028, kSanitized ? 100000 : 1000000, lob::opgen::all_types_mix());
+}
+
 TEST(FastVsReference, TightMaxOrdersMatchesReference) {
   // Capacity 8 on the order pool: most limit remainders cannot rest.
   constexpr Config config{100, 200, 8, 32};

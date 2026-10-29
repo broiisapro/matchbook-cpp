@@ -33,10 +33,12 @@ jobs:
     # Not part of the required checks: only the schedule and a manual dispatch
     # start this workflow, never a pull request or a push.
     runs-on: ${{ fromJSON(vars.CI_RUNS_ON || '["self-hosted","macOS","ARM64"]') }}
-    # Both presets, both configs and five seeds are expected to finish well
-    # inside forty minutes; the timeout is headroom for a busy machine. The
-    # wide config gets its own, lower op count because the harness compares
-    # full-book digests after every operation and the wide books are deep.
+    # Both presets, both configs, both type mixes and five seeds are expected
+    # to finish well inside forty minutes; the timeout is headroom for a busy
+    # machine. The wide config gets its own, lower op count because the
+    # harness compares full-book digests after every operation and the wide
+    # books are deep. Every run with --types all roughly doubles the op count
+    # of the corresponding basic run.
     timeout-minutes: 90
     steps:
       # clean: false keeps the runner's persistent workspace, so both preset
@@ -77,13 +79,19 @@ jobs:
           done
           echo "nightly: ops=$OPS wide_ops=$WIDE_OPS seeds=${seeds[*]}"
 
-          # Each seed runs both configs against both ladders; the summary
-          # prints the config name and the max sampled depth.
+          # Each seed runs both configs against both ladders, once with the
+          # default (basic) submit types and once with --types all, which adds
+          # FOK and PostOnly submits. The summary prints the config name and
+          # the max sampled depth.
           for seed in "${seeds[@]}"; do
             for preset in release release-tree; do
-              echo "nightly: preset=$preset config=narrow seed=$seed"
+              echo "nightly: preset=$preset config=narrow seed=$seed types=basic"
               ./build/$preset/lobsim difftest --ops "$OPS" --seed "$seed" --config narrow
-              echo "nightly: preset=$preset config=wide seed=$seed"
+              echo "nightly: preset=$preset config=narrow seed=$seed types=all"
+              ./build/$preset/lobsim difftest --ops "$OPS" --seed "$seed" --config narrow --types all
+              echo "nightly: preset=$preset config=wide seed=$seed types=basic"
               ./build/$preset/lobsim difftest --ops "$WIDE_OPS" --seed "$seed" --config wide
+              echo "nightly: preset=$preset config=wide seed=$seed types=all"
+              ./build/$preset/lobsim difftest --ops "$WIDE_OPS" --seed "$seed" --config wide --types all
             done
           done
