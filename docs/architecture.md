@@ -386,9 +386,13 @@ the number is a round-trip latency under the load the client itself creates.
 It stamps each send, stops when every request has its first response or
 `--timeout-ms` expires, and records send-to-first-response into an HDR
 histogram. `--rate` limits the aggregate rate and `--md-udp-port` additionally
-subscribes a monitor that receives the publisher's UDP stream, detects gaps and
-uses the recovery service to close them. The JSON report (`--report`) carries
-the run parameters, percentiles, unanswered-order count, market-data counters
-and an error field; the exit status is non-zero when any order was unanswered
-or the run failed.
+subscribes a monitor (bound to `--md-bind`, default `0.0.0.0`) that receives
+the publisher's UDP stream, detects gaps and uses the recovery service to close
+them. After the last response the monitor keeps draining until its local book
+has applied every sequence the stream has announced, bounded by `--md-settle-ms`
+(default 2000), so a trailing gap announced by a heartbeat is recovered before
+the report is written. The JSON report (`--report`) carries the run parameters,
+percentiles, unanswered-order count, market-data counters (`final_seq`,
+`highest_known_seq`, `unrecovered_gaps`, `heartbeats`) and an error field; the
+exit status is non-zero when any order was unanswered or the run failed.
 
