@@ -18,6 +18,22 @@ Qty queue_qty(const Queue& queue) {
   return total;
 }
 
+/// Total quantity resting on the opposite side that an order with this limit
+/// price crosses: every ask at or below the price for a buy, every bid at or
+/// above it for a sell. The maps are ordered best price first, so the walk
+/// stops at the first level that no longer crosses.
+template <class Levels>
+Qty crossing_qty(const Levels& levels, Side side, Price limit_price) {
+  Qty total = 0;
+  for (const auto& [level_price, queue] : levels) {
+    if (side == Side::Buy ? level_price > limit_price : level_price < limit_price) {
+      break;
+    }
+    total += queue_qty(queue);
+  }
+  return total;
+}
+
 }  // namespace
 
 ReferenceBook::ReferenceBook(const Config& config, Listener& listener)
@@ -26,13 +42,6 @@ ReferenceBook::ReferenceBook(const Config& config, Listener& listener)
 void ReferenceBook::submit(OrderId id, Side side, OrderType type, Price price, Qty qty) {
   assert(!in_callback_);
 
-  // Validation step 0 (decision C47): FOK and PostOnly are part of the frozen
-  // contract but not implemented yet, so both engines reject them before any
-  // other check.
-  if (type == OrderType::FOK || type == OrderType::PostOnly) {
-    notify_reject(id, RejectReason::UnsupportedOrderType);
-    return;
-  }
   if (qty <= 0) {
     notify_reject(id, RejectReason::InvalidQuantity);
     return;
@@ -46,9 +55,37 @@ void ReferenceBook::submit(OrderId id, Side side, OrderType type, Price price, Q
     return;
   }
 
+  // PostOnly may only add liquidity: it is rejected before acceptance when the
+  // opposite side's best price already crosses its limit price. The book is
+  // single threaded and unchanged between here and the rest of the call, so
+  // this is the state the operation is applied to (section 4.1.2).
+  if (type == OrderType::PostOnly) {
+    const bool crosses = side == Side::Buy ? (!asks_.empty() && asks_.begin()->first <= price)
+                                           : (!bids_.empty() && bids_.begin()->first >= price);
+    if (crosses) {
+      notify_reject(id, RejectReason::WouldCross);
+      return;
+    }
+  }
+
   notify_accept(id);
 
   Qty remaining = qty;
+
+  // Fill or kill: the order may only trade if the whole quantity can be filled
+  // right now. Summing the crossing quantity first means a shortfall is seen
+  // before the first trade, so no trade or book update escapes (section 4.1.1).
+  if (type == OrderType::FOK) {
+    // The two sides use different map types (opposite comparators), so the
+    // walk is selected per side.
+    const Qty available =
+        side == Side::Buy ? crossing_qty(asks_, side, price) : crossing_qty(bids_, side, price);
+    if (available < qty) {
+      notify_cancel(id, qty);
+      return;
+    }
+  }
+
   if (side == Side::Buy) {
     while (remaining > 0 && !asks_.empty()) {
       auto level_it = asks_.begin();
@@ -112,7 +149,11 @@ void ReferenceBook::submit(OrderId id, Side side, OrderType type, Price price, Q
   if (remaining <= 0) {
     return;
   }
-  if (type == OrderType::Market || type == OrderType::IOC) {
+  // Market, IOC and FOK never rest. A FOK cannot reach this point: the kill
+  // check above guarantees that the crossing quantity fills it completely, so
+  // the cancel is defensive only. PostOnly never crosses, so it falls through
+  // to the ordinary resting path below.
+  if (type == OrderType::Market || type == OrderType::IOC || type == OrderType::FOK) {
     notify_cancel(id, remaining);
     return;
   }
