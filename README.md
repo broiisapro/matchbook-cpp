@@ -14,6 +14,11 @@ The author's background is mechatronics — memory layout, fixed-point arithmeti
 - [Epic 03 — shipping v1.0.0](docs/epic-03-ship-v1.md)
 - [Epic 04 — the lock-free SPSC ring](docs/epic-04-spsc-ring.md)
 - [Epic 05 — Python bindings](docs/epic-05-python-bindings.md)
+- [Epic 06 — fill-or-kill and post-only orders](docs/epic-06-fok-post-only.md)
+- [Epic 07 — shipping v1.1.0](docs/epic-07-ship-v1-1.md)
+- [Epic 08 — the wire protocol](docs/epic-08-wire-protocol.md)
+- [Epic 09 — gateway, publisher and load generator](docs/epic-09-gateway-publisher-loadgen.md)
+- [Epic 10 — the Compose demo](docs/epic-10-compose-demo.md)
 
 ## Benchmarks
 

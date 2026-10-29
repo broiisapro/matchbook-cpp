@@ -42,8 +42,8 @@ CMake targets (all defined in Epic 0 with placeholder sources): `lob` (static li
 
 - `using Price = std::int64_t; using Qty = std::int64_t; using OrderId = std::uint64_t;`
 - `enum class Side : std::uint8_t { Buy = 0, Sell = 1 };`
-- `enum class OrderType : std::uint8_t { Limit = 0, Market = 1, IOC = 2 };` (FOK/PostOnly appended in Phase 2; values never renumbered.)
-- `enum class RejectReason : std::uint8_t { DuplicateId = 1, UnknownOrder, InvalidQuantity, InvalidPrice, CapacityExceeded, ModifyNoChange };`
+- `enum class OrderType : std::uint8_t { Limit = 0, Market = 1, IOC = 2, FOK = 3, PostOnly = 4 };` (Phase 2 appended FOK and PostOnly; values never renumbered.)
+- `enum class RejectReason : std::uint8_t { DuplicateId = 1, UnknownOrder, InvalidQuantity, InvalidPrice, CapacityExceeded, ModifyNoChange, UnsupportedOrderType, WouldCross };` (values appended, never renumbered.)
 - `struct Config { Price min_price; Price max_price; std::uint32_t max_orders; std::uint32_t max_levels; };` Both engines enforce the same limits (§4.1), so they stay comparable even when limits bite.
 
 ## 4. Event contract (authoritative for both engines)
@@ -63,7 +63,7 @@ Callbacks are synchronous and must not call back into the book. Debug builds ass
 
 ### 4.1 `submit(OrderId id, Side side, OrderType type, Price price, Qty qty)`
 Validation, in this order, first failure wins, nothing else is emitted:
-0. `type` is `FOK` or `PostOnly` → `on_reject(id, UnsupportedOrderType)` while the Phase 2 semantics below are unimplemented (interim behaviour, decision C47; see §4.1.1–§4.1.2 for the final contract).
+0. `FOK` and `PostOnly` are supported: their validation and matching are §4.1.1 and §4.1.2, which start from steps 1–3 below. (While Phase 2 rolled out, before Epic 06, both were rejected here with `UnsupportedOrderType` — interim behaviour, decision C47.)
 1. `qty <= 0` → `on_reject(id, InvalidQuantity)`.
 2. Limit, IOC, FOK or PostOnly with `price < min_price || price > max_price` → `on_reject(id, InvalidPrice)`. Market orders ignore `price` (callers pass 0).
 3. `id` is a live resting order → `on_reject(id, DuplicateId)`. (Ids of filled or cancelled orders may be reused.)
@@ -78,10 +78,10 @@ Then:
 
 ### 4.1.1 `FOK` — fill or kill (final semantics, implemented in Epic 06)
 
-**Interim (current):** rejected at validation step 0 with `UnsupportedOrderType`, in both engines, exactly as written in §4.1. Nothing else is emitted and the book is untouched.
+**Interim (superseded in Epic 06):** rejected at validation step 0 with `UnsupportedOrderType`, in both engines, exactly as written in §4.1. Nothing else is emitted and the book is untouched.
 
 **Final:** a limit order that must fill completely and immediately against the resting book or not trade at all.
-1. Validation is the §4.1 sequence without step 0 (FOK is supported), with the FOK price bounds of step 2. Duplicate id, quantity and price rejects are unchanged.
+1. Validation is the §4.1 sequence with the FOK price bounds of step 2. Duplicate id, quantity and price rejects are unchanged.
 2. `on_accept(id)` is emitted before any trade.
 3. The kill check runs before the first trade is emitted: the available crossing quantity is the total quantity resting at opposite levels that the order crosses at its limit price (buy: every ask level `<= price`; sell: every bid level `>= price`). If that total is less than the submitted quantity, the order is killed: `on_accept(id)` is followed by `on_cancel(id, qty)` — the full submitted quantity, which never rested — and no `on_trade` or `on_book_update` is emitted. The book is unchanged.
 4. If the crossing quantity is enough, the fill is performed exactly as in §4.1 step 5, in price-time priority, until the full quantity is filled. The event sequence is then identical to an IOC of the same side, price and quantity that fully fills: `on_accept`, one `on_trade` plus `on_book_update` per maker touched, no `on_cancel`.
@@ -89,10 +89,10 @@ Then:
 
 ### 4.1.2 `PostOnly` — rest or reject (final semantics, implemented in Epic 06)
 
-**Interim (current):** rejected at validation step 0 with `UnsupportedOrderType`, in both engines, exactly as written in §4.1. `RejectReason::WouldCross` exists in the enum already so the final path needs no enum change.
+**Interim (superseded in Epic 06):** rejected at validation step 0 with `UnsupportedOrderType`, in both engines, exactly as written in §4.1. `RejectReason::WouldCross` existed in the enum already, so the final path needed no enum change.
 
 **Final:** a limit order that is only allowed to add liquidity.
-1. Validation is the §4.1 sequence without step 0 (PostOnly is supported), with the PostOnly price bounds of step 2. Duplicate id, quantity and price rejects are unchanged.
+1. Validation is the §4.1 sequence with the PostOnly price bounds of step 2. Duplicate id, quantity and price rejects are unchanged.
 2. If the order would cross on arrival — i.e. the opposite side's best price crosses the limit price at submit time (buy: `best_ask <= price`; sell: `best_bid >= price`) — it is rejected with `on_reject(id, WouldCross)`. Nothing else is emitted: no `on_accept`, no trade, no book update, and the id is not resting.
 3. Otherwise it rests exactly like a limit order: `on_accept(id)` and then §4.1 step 6 for the full quantity, including the capacity rule (if `max_orders` or `max_levels` forbids resting, `on_cancel(id, qty)`).
 4. The crossing check is against the book as it is when the operation is applied, not against a later state; an order that rests can of course be traded against by a later incoming order.
@@ -317,11 +317,13 @@ sequence numbers.
 
 The stream also carries **heartbeats** (decision C57). When no event has been
 published for 100 ms, the gateway emits a `Heartbeat` whose header `seq` is the
-last sequence number published; a heartbeat never consumes a sequence number.
-The publisher forwards heartbeats over UDP like any other message, and
-`FeedHandler` treats a heartbeat whose `seq` is above its last seen sequence as
-a gap and recovers it. This closes the trailing-gap blind spot: a lost final
-datagram is detected even when no later event follows it.
+last sequence number published; a heartbeat never consumes a sequence number,
+is not sent before the first sequenced event, and is skipped while no subscriber
+is connected. The publisher forwards heartbeats over UDP like any other message
+but does not retain them for recovery, and `FeedHandler` treats a heartbeat
+whose `seq` is above its last seen sequence as a gap and recovers it. This
+closes the trailing-gap blind spot: a lost final datagram is detected even when
+no later event follows it.
 
 Slow subscribers do not slow the engine: the gateway queues at most **1 MiB**
 of pending frames per subscriber (26,214 `BookUpdate`s or 18,724 `Trade`s) on
@@ -337,14 +339,16 @@ re-publishes the same frames over UDP, keeps a retransmit store and answers
 ### 15.4 Publisher and recovery
 
 `lob_publisher` is one single-threaded poll loop. It connects to the gateway's
-market-data stream, frames the stream with a `StreamFramer`, stores every frame
-in a preallocated retransmit ring and appends consecutive frames to a UDP
-datagram until the next one would exceed **1200 bytes**, then sends it to every
-`--udp-dest host:port`. Destinations are resolved once at start-up, so a name
-must exist before the publisher starts. `--mcast-group addr:port` adds one
-send-only multicast destination; nothing in the project joins a group, so
-unicast is the tested path. Frames are forwarded unchanged and keep their
-market-data sequence in the header.
+market-data stream, frames the stream with a `StreamFramer`, stores every
+`BookUpdate` and `Trade` frame in a preallocated retransmit ring and appends
+consecutive frames to a UDP datagram until the next one would exceed
+**1200 bytes**, then sends it to every `--udp-dest host:port`. Heartbeats are
+forwarded but not stored: the ring already holds the event a heartbeat points
+at. Destinations are resolved once at start-up, so a name must exist before the
+publisher starts. `--mcast-group addr:port` adds one send-only multicast
+destination; nothing in the project joins a group, so unicast is the tested
+path. Frames are forwarded unchanged and keep their market-data sequence in the
+header.
 
 The publisher reconnects to the gateway with a backoff that starts at 100 ms
 and doubles to a 5 s ceiling. It keeps the last **65,536** messages by default
