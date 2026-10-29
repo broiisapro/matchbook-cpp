@@ -119,10 +119,13 @@ target_link_libraries(lobsim PRIVATE lobsim_core)
 
 # Benchmarks.
 #
-# The benchmark binary uses the macOS timer in bench/timer.hpp, so it is
-# skipped on Linux: the linux-release preset sets LOB_BUILD_BENCH=OFF. The
-# option stays ON by default so every macOS preset builds it unchanged.
-option(LOB_BUILD_BENCH "Build the benchmark binary" ON)
+# Two targets depend on the macOS timer in bench/timer.hpp: the benchmark
+# binary and the SPSC enqueue-to-callback latency harness. Both are gated by
+# this option so that a platform without that timer (the Linux port) can build
+# the default `all` target without naming targets. The option stays ON by
+# default so every macOS preset builds both unchanged; the linux-release preset
+# sets it OFF.
+option(LOB_BUILD_BENCH "Build the benchmark binary and the SPSC latency harness" ON)
 if(LOB_BUILD_BENCH)
   file(GLOB LOB_BENCH_SOURCES CONFIGURE_DEPENDS
        "${CMAKE_CURRENT_SOURCE_DIR}/bench/*.cpp")
@@ -141,15 +144,18 @@ endif()
 # SPSC ring buffer (Epic 04). Both are standalone tools over the header-only
 # ring: a TSan stress loop and an enqueue-to-callback latency harness. The
 # latency harness uses the benchmark harness's timer and mode rules, so it
-# includes bench/ but links only the engine, the operation generator and HDR.
+# includes bench/ — and therefore the macOS timer — behind the benchmark
+# option; it links only the engine, the operation generator and HDR.
 add_executable(spsc_stress "${CMAKE_CURRENT_SOURCE_DIR}/tools/spsc/stress.cpp")
 target_include_directories(spsc_stress PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(spsc_stress PRIVATE lob)
 
-add_executable(spsc_latency "${CMAKE_CURRENT_SOURCE_DIR}/tools/spsc/latency.cpp")
-target_include_directories(spsc_latency PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(spsc_latency PRIVATE lob lob_opgen
-                                             hdr_histogram::hdr_histogram_static)
+if(LOB_BUILD_BENCH)
+  add_executable(spsc_latency "${CMAKE_CURRENT_SOURCE_DIR}/tools/spsc/latency.cpp")
+  target_include_directories(spsc_latency PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(spsc_latency PRIVATE lob lob_opgen
+                                               hdr_histogram::hdr_histogram_static)
+endif()
 
 # Tests. test_alloc replaces global operator new/delete, so it is its own
 # binary and stays out of lob_tests. lobsim_core publishes the engine and tool
