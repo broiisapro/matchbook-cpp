@@ -201,13 +201,14 @@ happily, but every decoder rejects the frame as `InvalidField`, so a gateway
 client that submits a crossing post-only order cannot read the rejection it
 receives.
 
-Issue #150 fixes the range at the wire layer: the maximum is derived from the
-last `RejectReason` value and a `static_assert` pins the constant to the enum,
-so a future appended reason cannot silently fall outside the range again. The
-fix adds a round trip of every `RejectReason` value through the codec, a gateway
-test that submits a crossing post-only order and receives `Reject(WouldCross)`,
-and a companion test that an unfillable FOK receives `Cancelled` with no `Fill`.
-The fix also aligns the §14 reject-reason line with the constant.
+Issue #150 (merged as PR #161) fixed the range at the wire layer: the maximum
+is derived from the last `RejectReason` value and a `static_assert` pins the
+constant to the enum, so a future appended reason cannot silently fall outside
+the range again. The change added a round trip of every `RejectReason` value
+through the codec, a gateway test that submits a crossing post-only order and
+receives `Reject(WouldCross)`, and a companion test that an unfillable FOK
+receives `Cancelled` with no `Fill`. It also aligns the §14 reject-reason line
+with the constant.
 
 ## Key decisions and reasoning
 
@@ -298,9 +299,9 @@ The fix also aligns the §14 reject-reason line with the constant.
   `kWireSize` bytes, so passing a buffer with trailing frames is not an error.
   Callers that need exact framing use the framer.
 - **The reject-reason range was too narrow for one wave.** It shipped as 1–7
-  while `WouldCross` is 8; the fix is issue #150. The wire layer had no test
-  that every `RejectReason` value round-trips, which is exactly the gap that
-  allowed it; the fix adds that test.
+  while `WouldCross` is 8; the wire layer had no test that every `RejectReason`
+  value round-trips, which is exactly the gap that allowed it. Issue #150
+  (merged as PR #161) fixed the range and added that test.
 - **Order types 3 and 4 were accepted before the engines implemented them.**
   The decoder has always accepted the full 0–4 range, so the protocol never had
   to change when Epic 06 landed. A decoder cannot tell whether the peer

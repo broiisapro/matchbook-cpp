@@ -329,11 +329,11 @@ active once #113 merged, with no test edit.
   reported as accept + cancel for the unrestable quantity, for post-only just
   as for limit orders. The reject reason exists in the enum and on the wire but
   no engine path emits it.
-- **A post-only rejection may not reach a remote client yet.** The wire
-  protocol's reject-reason range was capped below `WouldCross` when the protocol
-  landed (#102); Epic 08's `WouldCross` fix (#150) extends it. Until that fix is
-  merged, a gateway client that submits a crossing post-only order gets a frame
-  its decoder refuses rather than a `Reject(WouldCross)`.
+- **A post-only rejection used to be undecodable on the wire.** The protocol's
+  reject-reason range stopped at 7 when it landed (#102) while `WouldCross` is
+  8, so a gateway client could not read a post-only rejection. Issue #150
+  (merged as PR #161) extended the range and added the round-trip and gateway
+  tests; the wire now carries every reject reason the engines can emit.
 - **No per-type counters in the engine.** Counts exist in `lobsim replay`'s
   summary and in the generator's tests, not as engine statistics; a service
   that wants them has to count listener events.
