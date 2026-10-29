@@ -32,15 +32,20 @@ published latency results come from the idle-machine run described in Epic 09.
    including the four services — and then runs the full CTest suite in the
    image. A broken Linux port fails the image instead of shipping a binary
    nobody exercised.
-3. **`runtime`** is Ubuntu 24.04 plus `libstdc++6`. It contains `lobsim`,
+3. **`runtime`** is the bare Ubuntu 24.04 base image. Every binary is
+   statically linked against the vcpkg libraries (zlib, xxHash, HDR histogram),
+   so the base image's C++ runtime and libc are all it needs; nothing is
+   installed in this stage, which also means it needs no package downloads
+   (PR #167 removed the last apt layer). It contains the stripped `lobsim`,
    `lob_gateway`, `lob_publisher`, `lob_md_listen`, `lob_loadgen` and the
    `loadgen-entrypoint` script; its default entrypoint is `lobsim`, so the
    existing `docker run <image> difftest …` usage still works.
 
 The benchmark binary and the SPSC latency harness are deliberately absent: both
 include the macOS timer in `bench/timer.hpp`, and `LOB_BUILD_BENCH=OFF` removes
-them. `bash` is present in the Ubuntu base image and is what the health checks
-use, so the runtime installs nothing beyond the C++ runtime.
+them (the `spsc_stress` soak binary is built in the build stage but not copied
+into the runtime). `bash` is present in the Ubuntu base image and is what the
+health checks use, so the runtime stage installs nothing at all.
 
 `scripts/docker_build.sh` builds the image and then smoke-tests the result: it
 runs `lobsim --help`, a 100,000-operation differential test and the help text of
@@ -57,25 +62,25 @@ demo cannot collide with a port already in use on the host.
 | Service | Image / command | Address | Role |
 |---|---|---|---|
 | `gateway` | `lob_gateway --port 9000 --md-port 9001` | 10.213.77.10 | order entry and market-data event stream |
-| `publisher` | `lob_publisher --gateway gateway:9001 --recovery-port 9002` | 10.213.77.11 | UDP fan-out to `10.213.77.12:9100`, `10.213.77.13:9101` and `127.0.0.1:9100`; recovery on 9002 |
+| `publisher` | `lob_publisher --gateway gateway:9001 --recovery-port 9002` | 10.213.77.11 | UDP fan-out to `10.213.77.12:9100`, `10.213.77.13:9101` and `10.213.77.14:9100`; recovery on 9002 |
 | `client1` | `lob_md_listen --udp-port 9100 --recovery publisher:9002 --top 5` | 10.213.77.12 | first listener |
 | `client2` | `lob_md_listen --udp-port 9101 --recovery publisher:9002 --top 5` | 10.213.77.13 | second listener |
-| `loadgen` | one-off, `profiles: ["load"]` | shares the publisher's namespace | the PRD load run |
+| `loadgen` | one-off, `profiles: ["load"]` | 10.213.77.14 | the PRD load run |
 
-The two listener addresses are static because the publisher resolves and caches
-its UDP destinations when it starts, before Compose has created those
-containers; service names would not resolve yet. Static addresses are routable
-on the bridge from the first packet.
+The two listener addresses (and the load generator's) are static because the
+publisher resolves and caches its UDP destinations when it starts, before
+Compose has created those containers; service names would not resolve yet.
+Static addresses are routable on the bridge from the first packet.
 
 The load generator is a one-off, started only by `docker compose run`, not by
 `up`. Its `loadgen-entrypoint.sh` fills in `--gateway gateway:9000`,
-`--md-udp-port 9100` and `--recovery 127.0.0.1:9002` when the caller did not pass
-them, so the PRD's short command works unchanged. Its market-data monitor binds
-loopback, so the service shares the publisher's network namespace and the
-publisher has an extra `127.0.0.1:9100` destination for it; order entry still
-crosses the bridge to `gateway:9000`. The report volume `loadgen-out:/out`
-survives `down`, which is how `scripts/compose_demo.sh` reads the report after
-the stack is gone.
+`--md-udp-port 9100` and `--recovery publisher:9002` when the caller did not
+pass them, so the PRD's short command works unchanged. It is an ordinary bridge
+service at 10.213.77.14: its market-data monitor binds `0.0.0.0`
+(`--md-bind`, issue #152, merged as PR #169) and the publisher unicasts a copy
+to 10.213.77.14:9100, while order entry crosses the bridge to
+`gateway:9000`. The report volume `loadgen-out:/out` survives `down`, which is
+how `scripts/compose_demo.sh` reads the report after the stack is gone.
 
 ### Health checks and startup ordering
 
@@ -120,7 +125,11 @@ cannot hold a slot while it tears down.
 ### The verified run
 
 The demo was run end to end on 2026-10-28 with the literal PRD commands and
-1,000,000 orders. The functional counters from the report:
+1,000,000 orders. The run predates two later changes — the load generator's own
+bridge address (issue #152, PR #169) and the image slimming (PR #167) — so the
+topology described above is newer than the counters; the commands, the script
+and the completeness checks are unchanged. The functional counters from the
+report:
 
 | Counter | Value |
 |---|---|
@@ -142,11 +151,12 @@ containers and CI, so they are not published as latency results — the README's
 numbers come only from the idle-machine run (Epic 09), and Docker figures are
 never presented as latency claims.
 
-The market-data counters cover the run window: the load generator's monitor
-stops with the last order, so datagrams published after the final response are
-not counted. A gap inside the window would still have been detected and
-reported, and the idle heartbeats make a lost final datagram visible in the
-native wiring test.
+The market-data counters cover the run plus the settle window: after the last
+response the monitor keeps draining until its local book has applied everything
+the stream announced, bounded by `--md-settle-ms` (2000 ms by default), so a
+trailing gap announced by an idle heartbeat is recovered before the report is
+written. That settle behaviour arrived with PR #169, after the run above, so
+the counters in the table were recorded before it.
 
 ### Linux and Docker CI
 
@@ -201,11 +211,13 @@ are the ones CI built and tested, not a local one-off.
   command is deliberately short. Putting the demo endpoints in the Compose
   environment and filling them in the entrypoint keeps that command literal
   while an explicit flag on the command line still wins.
-- **The load generator shares the publisher's namespace.** Its market-data
-  monitor binds loopback and has no bind-address flag yet. Rather than change
-  another workstream's component for the demo, the one-off shares the
-  publisher's namespace and the publisher sends it a loopback copy; order entry
-  still crosses the bridge. The workaround is documented and has a follow-up.
+- **The load generator is a normal bridge service with an explicit bind.** Its
+  market-data monitor binds `0.0.0.0` by default and `--md-bind` narrows it
+  (issue #152, merged as PR #169), so the one-off has its own bridge address
+  and the publisher unicasts a copy to it; order entry crosses the bridge like
+  any other service. The first version bound loopback and shared the
+  publisher's namespace; the flag removed that special case rather than change
+  another workstream's component for the demo.
 - **Functional numbers here, latency numbers elsewhere.** A container run on a
   shared Mac measures the machine's contention as much as the code. The demo's
   value is completeness — every order answered, every sequence accounted for —
@@ -245,9 +257,6 @@ are the ones CI built and tested, not a local one-off.
   three PRD commands work without a port already in use on the host. Reaching
   the gateway from the host requires adding a `ports:` entry, which the Compose
   file documents in a comment.
-- **The load generator uses the publisher's network namespace.** Its monitor
-  binds loopback and has no bind-address flag in this version; the workaround is
-  visible in Compose and named as a follow-up rather than hidden.
 - **The demo's latency figures are not published.** They are recorded in the
   report and visible to anyone who runs the demo, but the documented latency
   results come from the idle-machine run. A container run on a shared machine is
@@ -274,10 +283,11 @@ are the ones CI built and tested, not a local one-off.
 - **The retransmit window is finite.** The publisher keeps 100,000 messages in
   the demo (65,536 by default). A subscriber that falls further behind gets a
   `SequenceReset` and must rebuild from live traffic.
-- **The load generator's monitor stops with the last order.** Market-data
-  counters cover the run window, not the moments after the final response; a
-  gap there is caught by the heartbeats in the native wiring test, not by the
-  demo report.
+- **The load generator's monitor settles, it does not run forever.** After the
+  last response it drains until the stream is complete or quiet, bounded by
+  `--md-settle-ms`; a publisher that stays silent past that budget leaves
+  `unrecovered_gaps` as the evidence, and anything later is caught by the
+  heartbeats in the native wiring test.
 - **The demo has no latency claim.** Its percentiles are container measurements
   on a shared machine; publishing them would misrepresent the software.
 - **One image platform.** `linux/arm64` only; an amd64 image would need its own
