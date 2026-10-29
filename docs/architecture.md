@@ -216,3 +216,103 @@ Enum-valued fields use the wire values of `Side`, `OrderType` and `RejectReason`
 Decoding a header checks, in order: enough bytes (Truncated), reserved zero (BadReserved), `length <= 40` (Oversize), a known type id (UnknownType), `length == body size of that type` (BadLength). A typed decoder then checks the body's reserved bytes (BadReserved) and enum ranges (InvalidField); the header type must also match the requested message (WrongType). Only after every check passes are the caller's output value and sequence number updated.
 
 `StreamFramer` accepts a stream in arbitrary chunks. It holds at most one frame (56 bytes, on the stack as a member) and never allocates: it copies header bytes until 16 are present, validates the header immediately — so a bad header is reported without waiting for a body — then copies the body and hands the complete frame to a `FrameSink` callback. `push()` reports how many input bytes it consumed; a sink that returns false stops the call (FramerResult::Stopped) and the caller resubmits the unconsumed bytes. A protocol error clears the buffer and latches until `reset()`; later pushes return Error without consuming input. The sink's span points into the framer's buffer and is valid only for the duration of the callback.
+
+## 15. Phase 3 processes
+
+Phase 3 splits the stack into processes that speak the §14 protocol over TCP,
+plus one UDP hop for market data (decision C54):
+
+| Process | Executable | Sockets |
+|---|---|---|
+| Gateway | `lob_gateway` | order entry TCP 9000; market-data stream TCP 9001 |
+| Publisher | `lob_publisher` | connects to 9001; UDP fan-out to its destinations; recovery TCP 9002 |
+| Feed handler | `lob_md_listen` | UDP receive; connects to the recovery port |
+| Load generator | `lob_loadgen` | connects to 9000; optional UDP and recovery |
+
+All four default to loopback-friendly ports but every port is a flag; the
+gateway accepts 0 and reports the port the kernel chose.
+
+### 15.1 Gateway threads and rings
+
+The gateway runs exactly two threads. The **network thread** owns every socket,
+accepts connections, frames input with one `StreamFramer` per connection, writes
+order-entry responses and fans market data out to subscribers. The **engine
+thread** owns the single instrument's `OrderBook`, the only `Listener`, and
+applies every command in arrival order.
+
+They exchange three fixed-size SPSC rings:
+
+| Ring | Direction | Depth | Element |
+|---|---|---|---|
+| Commands | network → engine | 16,384 | one decoded NewOrder, Cancel or Modify |
+| Responses | engine → network | 65,536 | one encoded order-entry frame plus its target session |
+| Market data | engine → network | 65,536 | one encoded BookUpdate or Trade frame |
+
+The engine thread allocates nothing per message: commands are fixed-size
+values, frames are encoded into stack buffers, and the rings are allocated once
+with the gateway. Apart from the rings, the threads share only the atomic
+counters exposed as `md_sequence_published`, `md_sequence_forwarded`,
+`subscriber_count` and `session_count`, and a self-pipe used to wake the network
+thread; the engine writes at most one byte while a wake-up is pending.
+
+Backpressure is one-directional and bounded. The network thread only hands
+buffered bytes to the framer when the command ring has room for every frame
+that buffer can contain, so it never waits on the engine. A client that runs
+ahead of the book is left with its bytes buffered (1 MiB per connection) and is
+disconnected past that bound. The engine never drops an event: if the
+market-data ring is full it waits for the network thread to drain it, and a
+subscriber that cannot keep up is disconnected instead of slowing the engine.
+
+### 15.2 Sessions and order ids
+
+One accepted connection is one session. v2.0 has no logon, authentication or
+session-resume message, so the session begins at connect and ends at close.
+Session ids start at 1, are never reused and fit in 24 bits.
+
+The engine order id is `(session_id << 40) | client_order_id`; a client order
+id must therefore fit in 40 bits. An id that does not is answered with `Reject`
+and `RejectReason::CapacityExceeded` and leaves the session open. A session's
+resting orders stay in the book after it disconnects: there is no mass-cancel or
+session-cancel message in v2.0.
+
+Order-entry responses (`Ack`, `Reject`, `Fill`, `Cancelled`) are addressed to
+the session that owns the order and carry **client** order ids — the low 40 bits
+of the engine id, which is exactly what the client sent, since a client cannot
+know its own session id. A `Fill` is sent to the maker's session and to the
+taker's session (once when both are the same), with the maker and taker fields
+both expressed as client ids. Market-data messages carry the full engine order
+ids because a publisher or feed handler sees several sessions at once.
+
+The common header's `seq` field on order-entry frames is the gateway's
+per-connection sequence number: it starts at 1 and increases by one for every
+frame written on that connection. The network thread stamps it when it appends
+the frame, so the counter has a single owner. `Heartbeat` is echoed with the
+same nonce. Because §14 has no `Modified` message, an in-place modify (same
+price, reduced quantity) is acknowledged with an `Ack` for the same order id;
+a cancel+new modify emits `Cancelled` followed by the normal submit `Ack`.
+
+### 15.3 Market-data event stream
+
+The engine thread publishes one message per `on_book_update` (`BookUpdate`) and
+per `on_trade` (`Trade`), in the order the book produced them. The header `seq`
+field of those frames is a single, gap-free stream sequence starting at 1 — on
+this stream it is a stream sequence, not a per-connection counter. The gateway
+serves the stream on the market-data TCP port to any number of subscribers.
+
+A subscriber receives the stream from the moment its connection is accepted;
+there is no snapshot in v2.0, so a late subscriber starts at the current
+sequence and must build its book from later updates (or from a snapshot a
+future version will add). Every subscriber gets the same frames with the same
+sequence numbers.
+
+Slow subscribers do not slow the engine: the gateway queues at most **1 MiB**
+of pending frames per subscriber (26,214 `BookUpdate`s or 18,724 `Trade`s) on
+top of a **64 KiB** socket send buffer requested from the kernel. A subscriber
+that falls further behind is disconnected; other subscribers and order entry
+are unaffected. A disconnected subscriber simply reconnects and starts from the
+then-current sequence.
+
+The gateway is not the publisher: `lob_publisher` connects to this stream and
+re-publishes the same frames over UDP, keeps a retransmit store and answers
+`RecoveryRequest` with the held frames or a `SequenceReset` (§14.2).
+
