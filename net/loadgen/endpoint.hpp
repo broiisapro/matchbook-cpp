@@ -11,6 +11,7 @@
 namespace lob::loadgen {
 
 inline constexpr std::uint16_t kDefaultGatewayPort = 9000;
+inline constexpr std::uint16_t kDefaultRecoveryPort = 9002;
 
 struct Endpoint {
   std::string host;
@@ -24,5 +25,9 @@ struct Endpoint {
 /// description in `error` for a missing host, a non-numeric port or a port
 /// outside 1..65535.
 bool parse_endpoint(std::string_view text, Endpoint& out, std::string& error);
+
+/// Same as parse_endpoint, with `default_port` used when the text has no port.
+bool parse_endpoint_with_default(std::string_view text, std::uint16_t default_port, Endpoint& out,
+                                 std::string& error);
 
 }  // namespace lob::loadgen

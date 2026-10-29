@@ -23,6 +23,10 @@ struct CliOptions {
   std::chrono::milliseconds response_timeout{5000};
   lob::Price min_price = 1;
   lob::Price max_price = 200000;
+  /// UDP port of the publisher's market-data stream; 0 disables md counting.
+  std::uint16_t md_udp_port = 0;
+  /// Publisher recovery service used to fill market-data gaps.
+  Endpoint recovery{"127.0.0.1", kDefaultRecoveryPort};
   bool help = false;
 };
 

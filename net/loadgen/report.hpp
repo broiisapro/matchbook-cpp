@@ -9,6 +9,7 @@
 #include <string>
 
 #include "net/loadgen/latency.hpp"
+#include "net/loadgen/md_monitor.hpp"
 #include "net/loadgen/runner.hpp"
 
 namespace lob::loadgen {
@@ -24,6 +25,10 @@ struct Report {
   LatencySummary latency;
   /// Samples above the histogram ceiling, clamped instead of dropped.
   std::uint64_t latency_clamped_samples = 0;
+  /// Market-data counters; has_md is false when the run did not monitor the
+  /// publisher's stream.
+  bool has_md = false;
+  MdSummary md;
   /// Empty unless the runner stopped on an I/O or protocol failure.
   std::string error;
 };

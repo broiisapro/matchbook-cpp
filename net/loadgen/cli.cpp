@@ -67,6 +67,9 @@ std::string usage() {
          "  --timeout-ms N         per-request response timeout in ms (default 5000)\n"
          "  --min-price P          lowest generated limit price (default 1)\n"
          "  --max-price P          highest generated limit price (default 200000)\n"
+         "  --md-udp-port P        publisher UDP port to monitor (absent or 0 = no md counting)\n"
+         "  --recovery HOST[:PORT] publisher recovery service for md gaps (default "
+         "127.0.0.1:9002)\n"
          "  --help, -h             print this text\n";
 }
 
@@ -197,6 +200,30 @@ CliStatus parse_cli(int argc, char** argv, CliOptions& out, std::string& error) 
         }
         if (!parse_i64(value, options.max_price)) {
           error = "--max-price must be an integer: '" + std::string(value) + "'";
+          return CliStatus::Error;
+        }
+        return CliStatus::Ok;
+      }
+      if (argument == "--md-udp-port") {
+        const std::string_view value = value_ahead(argument);
+        if (value.empty()) {
+          return CliStatus::Error;
+        }
+        std::uint64_t port = 0;
+        if (!parse_u64(value, port) || port > 65535) {
+          error =
+              "--md-udp-port must be a number between 0 and 65535: '" + std::string(value) + "'";
+          return CliStatus::Error;
+        }
+        options.md_udp_port = static_cast<std::uint16_t>(port);
+        return CliStatus::Ok;
+      }
+      if (argument == "--recovery") {
+        const std::string_view value = value_ahead(argument);
+        if (value.empty()) {
+          return CliStatus::Error;
+        }
+        if (!parse_endpoint_with_default(value, kDefaultRecoveryPort, options.recovery, error)) {
           return CliStatus::Error;
         }
         return CliStatus::Ok;
