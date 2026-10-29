@@ -174,3 +174,20 @@ enable_testing()
 include(GoogleTest)
 gtest_discover_tests(lob_tests DISCOVERY_MODE PRE_TEST)
 gtest_discover_tests(test_alloc DISCOVERY_MODE PRE_TEST)
+
+# End-to-end wiring test (decision C58, issue #153). The four Phase 3
+# executables run together on loopback through scripts/e2e_local.sh: real TCP
+# order entry, the gateway's market-data stream, the publisher's UDP fan-out
+# and recovery service, and the feed handler gap counters. The block is last so
+# the apps added above already exist; it degrades to nothing on a build that
+# does not define all four targets (for example a partial configure).
+if(TARGET lob_gateway AND TARGET lob_publisher AND TARGET lob_md_listen AND
+   TARGET lob_loadgen)
+  add_test(NAME E2E.LocalWiring
+           COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/scripts/e2e_local.sh"
+                   $<TARGET_FILE:lob_gateway>
+                   $<TARGET_FILE:lob_publisher>
+                   $<TARGET_FILE:lob_md_listen>
+                   $<TARGET_FILE:lob_loadgen>)
+  set_tests_properties(E2E.LocalWiring PROPERTIES LABELS e2e TIMEOUT 120)
+endif()
