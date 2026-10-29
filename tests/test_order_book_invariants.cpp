@@ -77,8 +77,9 @@ void apply(const Op& op, OrderBook& book) {
 }
 
 /// Local seeded generator: a small id pool makes cancels and modifies hit
-/// live orders often, while a share of unknown ids, invalid quantities, IOC
-/// and market orders keeps the reject and cancel paths in the mix.
+/// live orders often, while a share of unknown ids, invalid quantities, IOC,
+/// FOK, PostOnly and market orders keeps the reject, kill, WouldCross and
+/// cancel paths in the mix.
 std::vector<Op> make_operations(std::uint64_t seed, std::size_t count, const Config& config) {
   constexpr std::uint64_t kIdPool = 256;
   Rng rng(seed);
@@ -107,7 +108,19 @@ std::vector<Op> make_operations(std::uint64_t seed, std::size_t count, const Con
       op.type = OrderType::IOC;
       op.price = config.min_price + static_cast<Price>(rng.next() % 600);
       op.qty = static_cast<Qty>(1 + rng.next() % 50);
-    } else if (roll < 86) {
+    } else if (roll < 70) {
+      // Fill or kill: prices drawn from the same wide band as IOC, so the
+      // stream reaches both the killed path and a full fill.
+      op.type = OrderType::FOK;
+      op.price = config.min_price + static_cast<Price>(rng.next() % 600);
+      op.qty = static_cast<Qty>(1 + rng.next() % 50);
+    } else if (roll < 78) {
+      // PostOnly: the price band overlaps the resting book, so some are
+      // rejected with WouldCross and the rest add liquidity.
+      op.type = OrderType::PostOnly;
+      op.price = config.min_price + static_cast<Price>(rng.next() % 401);
+      op.qty = static_cast<Qty>(1 + rng.next() % 50);
+    } else if (roll < 90) {
       op.kind = Op::Kind::Cancel;
     } else {
       op.kind = Op::Kind::Modify;

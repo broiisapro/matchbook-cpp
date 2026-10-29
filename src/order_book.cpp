@@ -21,14 +21,6 @@ OrderBook::OrderBook(const Config& config, Listener& listener)
 void OrderBook::submit(OrderId id, Side side, OrderType type, Price price, Qty qty) {
   assert(!in_callback_ && "reentrancy: a listener callback called back into the book");
 
-  // Validation step 0: the Phase 2 types are part of the frozen contract but
-  // their matching semantics are not implemented yet. Both engines reject them
-  // here, before every other check, so the differential test stays exact
-  // (decision C47).
-  if (type == OrderType::FOK || type == OrderType::PostOnly) {
-    notify_reject(id, RejectReason::UnsupportedOrderType);
-    return;
-  }
   if (qty <= 0) {
     notify_reject(id, RejectReason::InvalidQuantity);
     return;
@@ -39,6 +31,14 @@ void OrderBook::submit(OrderId id, Side side, OrderType type, Price price, Qty q
   }
   if (ids_.find(id) != IdMap::kNull) {
     notify_reject(id, RejectReason::DuplicateId);
+    return;
+  }
+  // A PostOnly order may only add liquidity, so it is rejected before it is
+  // accepted when the opposite side already crosses its limit price (section
+  // 4.1.2). The book cannot change between here and the rest of the call, so
+  // this is the state the order is applied to.
+  if (type == OrderType::PostOnly && would_cross(side, price)) {
+    notify_reject(id, RejectReason::WouldCross);
     return;
   }
 
@@ -118,9 +118,22 @@ void OrderBook::place(OrderId id, Side side, OrderType type, Price price, Qty qt
       remaining = match(id, side, price, remaining, /*market=*/false);
       break;
     case OrderType::FOK:
+      // The kill check runs before the first trade is emitted: the crossing
+      // quantity is summed without touching the book, so a shortfall cancels
+      // the full submitted quantity and emits no trade and no book update
+      // (section 4.1.1). A FOK never rests, so it never reaches the capacity
+      // path in rest().
+      if (!can_fill_immediately(side, price, qty)) {
+        notify_cancel(id, qty);
+        return;
+      }
+      remaining = match(id, side, price, remaining, /*market=*/false);
+      assert(remaining == 0 && "a FOK that may fill is filled completely");
+      break;
     case OrderType::PostOnly:
-      // Rejected during validation (decision C47); nothing reaches place().
-      assert(false && "FOK and PostOnly are rejected before placing");
+      // A PostOnly order that would cross was rejected in submit(), so it
+      // always rests, exactly like a limit order including the capacity rule.
+      rest(id, side, price, qty);
       return;
   }
   if (remaining > 0) {
@@ -277,6 +290,31 @@ void OrderBook::rest(OrderId id, Side side, Price price, Qty qty) {
   level->total_qty += qty;
   ++level->order_count;
   notify_book_update(side, price, level->total_qty);
+}
+
+bool OrderBook::would_cross(Side side, Price price) const {
+  const std::optional<Price> best = ladder(opposite(side)).best_price();
+  if (!best.has_value()) {
+    return false;
+  }
+  return side == Side::Buy ? *best <= price : *best >= price;
+}
+
+bool OrderBook::can_fill_immediately(Side side, Price price, Qty qty) const {
+  // Every level total is positive and the walk stops as soon as the need is
+  // covered, so the unsigned sum stays below the submitted quantity plus one
+  // level total and cannot overflow.
+  std::uint64_t available = 0;
+  const std::uint64_t need = static_cast<std::uint64_t>(qty);
+  ladder(opposite(side)).for_each_best_first([&](Price level_price, const Level& level) {
+    const bool crosses = side == Side::Buy ? level_price <= price : level_price >= price;
+    if (!crosses) {
+      return false;
+    }
+    available += static_cast<std::uint64_t>(level.total_qty);
+    return available < need;
+  });
+  return available >= need;
 }
 
 void OrderBook::notify_accept(OrderId id) {
