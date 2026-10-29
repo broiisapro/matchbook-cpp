@@ -183,11 +183,12 @@ report_field() {
   sed -n "s/.*$2.*/\\1/p" "$1" 2>/dev/null | head -n 1
 }
 
-# check_report FILE: fails unless the load generator's report says every order
-# was answered and no market-data sequence gap was left open. Prints the
-# report's own numbers on success.
+# check_report FILE WALL_SECONDS: fails unless the load generator's report says
+# every order was answered and no market-data sequence gap was left open.
+# Prints the one-line summary on success.
 check_report() {
   local path="$1"
+  local wall_seconds="$2"
   local problems=0
 
   if ! grep -q '"orders_without_response": 0,' "$path"; then
@@ -222,8 +223,8 @@ check_report() {
   final_seq="$(report_field "$path" '"final_seq": \([0-9][0-9]*\)')"
   printf 'e2e_local: ok - %s orders (%s answered), 0 unanswered, 0 unrecovered gaps, ' \
          "$requested" "$answered"
-  printf '%s market-data frames, final seq %s, %ss load\n' \
-         "$md_received" "${final_seq:-unknown}" "${elapsed:-?}"
+  printf '%s market-data frames, final seq %s, %ss load, %ss wall\n' \
+         "$md_received" "${final_seq:-unknown}" "${elapsed:-?}" "$wall_seconds"
 }
 
 # run_once: one full wiring attempt. Returns 75 when a process could not bind
@@ -313,8 +314,7 @@ run_once() {
     fi
   done
 
-  check_report "$report_path" || return 1
-  printf 'e2e_local: %ss wall\n' "$elapsed"
+  check_report "$report_path" "$elapsed" || return 1
   stop_children
   return 0
 }
