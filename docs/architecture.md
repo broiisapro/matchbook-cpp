@@ -5,11 +5,12 @@ matchbook-cpp is a single-instrument limit order book and matching engine in C++
 ## 1. Repository layout
 
 ```
-CMakeLists.txt  CMakePresets.json  vcpkg.json
+CMakeLists.txt  CMakePresets.json  vcpkg.json  LICENSE
 .clang-format  .clang-tidy  .python-version  .gitignore  .dockerignore
 pyproject.toml  uv.lock                      Python workspace for the report scripts and the bindings
 docker-compose.yml  docker/                  Phase 3 image and demo topology (§15, docs/epic-10)
 .github/workflows/                           ci.yml, hygiene.yml, nightly.yml (§12)
+assets/                                      terminal recording used by the README
 include/lob/
   types.hpp           Price, Qty, OrderId, Side, OrderType, RejectReason   (frozen after Epic 0)
   config.hpp          Config {min_price, max_price, max_orders, max_levels}  (frozen after Epic 0)
@@ -35,12 +36,14 @@ tools/flowfile/       flow record spec (Epic 0) + binary/CSV reader/writer
 tools/opgen/          seeded random operation generator
 tools/lobsim/         CLI: gen, replay, difftest, convert-tardis
 tools/spsc/           spsc_stress (soak) and spsc_latency (enqueue-to-callback, Epic 04)
-python/pylob/         Python bindings (Epic 05); examples/replay_spread.py
+python/pylob/         Python bindings (Epic 05), with their own pyproject.toml and tests
+examples/             replay_spread.py, the README's binding example
 bench/                Google Benchmark suites + HDR harness
 tests/                GoogleTest unit, differential, allocation and component tests; tests/data/ fixtures
-scripts/              bootstrap_vcpkg.sh, e2e_local.sh, compose_demo.sh, docker_build.sh,
-                      run_benchmarks.sh, run_phase23_benchmarks.sh, bench_report.py,
-                      phase23_report.py, tardis_*.py (uv)
+scripts/              bootstrap_vcpkg.sh, check_determinism.sh, e2e_local.sh, compose_demo.sh,
+                      docker_build.sh, run_benchmarks.sh, run_phase23_benchmarks.sh,
+                      profile_ladder.sh, record_demo.sh, bench_report.py, phase23_report.py,
+                      tardis_*.py, their Python tests (uv)
 docs/                 architecture.md, epic-NN-<slug>.md
 ```
 
