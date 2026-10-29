@@ -4,15 +4,16 @@
 //
 // One TCP listener carries client sessions (NewOrder, Cancel, Modify,
 // Heartbeat); a second listener carries the market-data event stream
-// (BookUpdate, Trade). A network thread owns every socket and a single engine
-// thread owns the order book; the two exchange fixed-size messages through
-// lock-free SPSC rings, so the engine thread never touches a socket and never
-// allocates per message.
+// (BookUpdate, Trade, and an idle Heartbeat). A network thread owns every
+// socket and a single engine thread owns the order book; the two exchange
+// fixed-size messages through lock-free SPSC rings, so the engine thread never
+// touches a socket and never allocates per message.
 //
 // One accepted connection is one session, with no logon message in v2.0. The
 // engine order id is `(session_id << 40) | client_order_id`; a client order id
 // that does not fit in 40 bits is rejected with RejectReason::CapacityExceeded.
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -33,6 +34,11 @@ struct GatewayOptions {
   std::uint16_t md_port = 9001;
   /// Engine limits. The default matches the replay default (decision C24).
   Config book{1, 200000, 1048576, 200000};
+  /// Idle time on the market-data stream after which the gateway emits a
+  /// Heartbeat (decision C57). The heartbeat carries the last published
+  /// sequence number, so a subscriber that lost the final datagram can see the
+  /// hole even when no further event arrives.
+  std::chrono::milliseconds md_heartbeat_idle{100};
 };
 
 /// A running gateway: listeners opened at construction, threads started by
@@ -71,7 +77,8 @@ class Gateway {
   std::uint16_t md_port() const noexcept;
 
   /// Highest market-data sequence number the engine has published so far. The
-  /// stream starts at 1 and is gap-free.
+  /// stream starts at 1 and is gap-free. Heartbeats repeat the last published
+  /// number instead of consuming the next one.
   std::uint64_t md_sequence_published() const noexcept;
 
   /// Highest market-data sequence number the network thread has forwarded to

@@ -16,6 +16,12 @@
 // FeedHandlerConfig::max_buffered_messages) and applied as soon as the hole
 // closes, either because the datagrams show up late or because the recovery
 // service re-sends them.
+//
+// Heartbeats (decision C57) let a subscriber notice a trailing gap: they carry
+// the sequence number of the last published event, so a heartbeat above the
+// last applied number opens a hole even when no later event ever arrives. A
+// heartbeat never changes the book and never carries a sequence number of its
+// own.
 
 #include <cstddef>
 #include <cstdint>
@@ -103,6 +109,7 @@ struct FeedCounters {
   std::uint64_t dropped = 0;
   std::uint64_t malformed = 0;
   std::uint64_t trades = 0;
+  std::uint64_t heartbeats = 0;
 
   friend bool operator==(const FeedCounters&, const FeedCounters&) = default;
 };
@@ -143,6 +150,19 @@ class FeedHandler {
 
   /// Next publisher sequence number the handler expects.
   net::Seq expected_seq() const { return expected_seq_; }
+
+  /// Last sequence number applied to the local book: 0 before the first event,
+  /// after which it is `expected_seq() - 1`. The book is current through this
+  /// number with no holes.
+  net::Seq last_seen_seq() const { return expected_seq_ > 0 ? expected_seq_ - 1 : 0; }
+
+  /// Highest sequence number the stream has told the handler about, whether
+  /// from an applied frame, a buffered frame or a heartbeat. Equals
+  /// `last_seen_seq()` when the local book is complete; a larger value means
+  /// the stream published events the handler has not applied yet (a gap that
+  /// may still be recovered). Never decreases.
+  net::Seq highest_known_seq() const { return highest_known_seq_; }
+
   std::size_t buffered() const { return buffered_.size(); }
 
  private:
@@ -154,6 +174,10 @@ class FeedHandler {
   void maybe_recover();
   bool fetch_range(net::Seq from, net::Seq to);
 
+  /// Highest sequence number that bounds the recovery range: the highest frame
+  /// seen, whether buffered or applied, and the highest heartbeat.
+  net::Seq highest_known() const;
+
   FeedHandlerConfig config_;
   int fd_ = -1;
   std::uint16_t bound_port_ = 0;
@@ -162,6 +186,7 @@ class FeedHandler {
   FeedCounters counters_;
 
   net::Seq expected_seq_ = 1;
+  net::Seq highest_known_seq_ = 0;
   net::Seq recovery_request_seq_ = 0;
   /// Frames received ahead of expected_seq_, keyed by their sequence number.
   std::map<net::Seq, std::vector<std::byte>> buffered_;
