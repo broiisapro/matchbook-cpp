@@ -14,8 +14,9 @@ possible: a stress binary that proves order and integrity at volume, with a
 two-thread unit test that runs the same contract under ThreadSanitizer, and an
 enqueue-to-callback latency harness that measures the ring plus the engine
 event it carries. The ring is header-only, allocates nothing after
-construction, and is the only synchronisation mechanism the Phase 3 servers
-need between their network and engine threads (decision C48).
+construction, and is the only queue the Phase 3 servers need between their
+threads; a wake pipe and a handful of atomics signal wake-ups and shutdown
+(decision C48).
 
 ## How it works
 
@@ -234,16 +235,28 @@ exploratory and not a publishable number.
 
 ## Interfaces for future epics
 
-- **The gateway handoff (Phase 3).** `lob_gateway` (decision C54) uses two
-  rings: the network thread decodes order-entry commands into a trivially
-  copyable command struct and `try_push`es them; the engine thread `try_pop`s,
-  applies them to the book and pushes responses (Ack/Reject/Fill/Cancelled)
-  through a second ring back to the network thread, which writes them to
-  sockets. A full ring is backpressure the network thread handles by waiting
-  on its `poll` set and retrying, never by blocking the engine. At the time of
-  this write-up the gateway is still in flight (#119), so this paragraph
-  describes the binding the ring was designed for rather than merged gateway
-  code.
+- **The gateway handoff (Phase 3).** `lob_gateway` uses three rings, all in
+  `net/gateway/gateway_state.hpp`:
+  - `commands` (network → engine, `2^14` entries) carries one decoded client
+    command per slot: a fixed-size `Command` struct, at most 64 bytes, holding
+    kind, side, type, session, order id, price and quantity. It is the ring
+    depth that bounds how far a client can run ahead of the book.
+  - `responses` (engine → network, `2^16` entries) carries an encoded frame plus
+    its session id. It is larger than the command ring because one command can
+    emit several responses: a sweeping order produces one Fill per maker plus
+    the taker's remainder.
+  - `md` (engine → network, `2^16` entries) carries encoded market-data frames
+    with their gap-free sequence number already stamped by the engine; the
+    network thread fans them out to subscribers.
+
+  The ring API drives the backpressure policy on each side. The engine never
+  drops a response or a market-data event: when a downstream ring is full it
+  yields and retries (`push_response`, `publish_md`). The network thread bounds
+  a client that outruns the engine by buffering its decoded input up to a
+  fixed limit and disconnecting it beyond that, rather than by blocking the
+  engine on the command ring. Wake-ups go through a self-pipe that is written
+  only when it is not already pending, so a burst of events does not turn into
+  a syscall per event.
 - **Any future single-producer/single-consumer seam.** A second engine worker, a
   market-data fan-out or an offline backtester feeding a book reuses the same
   shape; the requirements are a trivially copyable message type and a
@@ -276,6 +289,12 @@ exploratory and not a publishable number.
   once per message, which slightly understates the producer's own cost but
   keeps backpressure out of the sample. The reported number is a handoff
   latency, not a full round trip.
+- The gateway inverts the producer/consumer wait: the network thread never
+  blocks the engine on a full command ring (it buffers or disconnects the
+  client), while the engine does spin-yield when a response or market-data
+  ring is full, because dropping those events would break the client protocol
+  and the market-data sequence. The ring itself stays non-blocking; the policy
+  lives in its callers.
 - The ring's element path is two `memcpy` calls. For the small command and
   response structs of the Phase 3 servers that is one or two machine words per
   direction; for a large `T` the copy cost is the caller's design choice.
