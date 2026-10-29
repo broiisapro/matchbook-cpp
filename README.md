@@ -6,7 +6,14 @@ matchbook-cpp is a limit order book and matching engine in modern C++ built the 
 
 The author's background is mechatronics — memory layout, fixed-point arithmetic and deterministic timing on embedded systems — which is the same set of instincts low-latency C++ rewards.
 
-`docs/architecture.md` fixes the event contract and the on-disk formats; the phase write-ups in `docs/epic-00-foundation.md`, `docs/epic-01-engines.md`, `docs/epic-02-array-ladder.md` and `docs/epic-03-ship-v1.md` explain how each part was built and measured.
+`docs/architecture.md` fixes the event contract and the on-disk formats. The epic write-ups explain how each part was built and measured:
+
+- [Epic 00 — foundation](docs/epic-00-foundation.md)
+- [Epic 01 — engines, differential harness, tools and benchmarks](docs/epic-01-engines.md)
+- [Epic 02 — the array price ladder](docs/epic-02-array-ladder.md)
+- [Epic 03 — shipping v1.0.0](docs/epic-03-ship-v1.md)
+- [Epic 04 — the lock-free SPSC ring](docs/epic-04-spsc-ring.md)
+- [Epic 05 — Python bindings](docs/epic-05-python-bindings.md)
 
 ## Benchmarks
 
@@ -56,6 +63,30 @@ Mixed flow throughput: 29,515,306 → 30,470,598 ops/s (1.03×).
 
 The array ladder wins on the matching-heavy rows: crossing and market orders get 4–11% off p50 (0.89–0.95×), and the three-level sweep's p99.9 falls from 27 ns to 23 ns, because best-price and next-level lookups become indexed loads instead of tree descents. It helps least where the tree was never the cost: cancels are 0.96× at p50 and unchanged at p99, and non-crossing adds are flat at p99.9, so the overall gain is a few percent rather than an order of magnitude. Treat the tail columns as smoothed: these are `batch128` samples, each the per-op average over 128 operations, so the p99 and p99.9 figures understate the tail of a single operation.
 
+## Order types
+
+Five order types share one event contract (`docs/architecture.md` §4.1) and are implemented identically in the fast and the reference engine:
+
+| Type | Semantics |
+| --- | --- |
+| Limit | Rests at its price in price-time priority and trades at the maker's resting price; a partial fill leaves the remainder resting. |
+| Market | Ignores its price, takes whatever the opposite side offers and cancels the unfilled remainder; it never rests. |
+| IOC | Matches like a limit order at its price, then cancels what is left instead of resting it. |
+| FOK | Fills completely and immediately at its limit, or not at all: a kill cancels the full submitted quantity and leaves the book untouched. It never rests. |
+| PostOnly | Adds liquidity only: rejected with `WouldCross` when the opposite side already crosses its limit, otherwise it rests like a limit order. |
+
+A fill always happens at the resting order's price, and a partially filled maker keeps its place in the queue. `modify` keeps priority only when the price is unchanged and the quantity shrinks; any other modify is cancel + new, so the order goes to the back of its level. Rejections follow a fixed order in both engines — quantity, price, duplicate id — and a capacity limit that prevents a remainder from resting cancels that remainder rather than rejecting the order.
+
+`lobsim gen` can emit every type and the differential test can compare them:
+
+```sh
+./build/release/lobsim gen --orders 200000 --seed 42 --types all --out build/release/flow-all.bin
+./build/release/lobsim replay build/release/flow-all.bin --engine fast --digest
+./build/release/lobsim difftest --ops 200000 --seed 42 --types all
+```
+
+The default `--types basic` keeps FOK and post-only out of the mix, so CI never compares an engine that implements them with one that does not; `--types all` adds them at about 5 % each, including post-only orders priced through the book so the `WouldCross` path is exercised. The nightly job runs both mixes on both ladders.
+
 ## Correctness
 
 - **Event contract.** `docs/architecture.md` §4 fixes the six callbacks and their exact order for every operation: accept, reject, trade at the resting price, cancel, in-place reduce, book update. Both engines are written against that text, and a listener must not call back into the book.
@@ -65,6 +96,28 @@ The array ladder wins on the matching-heavy rows: crossing and market orders get
 - **Allocation test.** `test_alloc` replaces every global `operator new`/`delete` form and counts allocations only around the measured loop. A positive control allocates through all eight `operator new` forms while armed and requires all eight to be counted; the hot-path test then performs 1,000,000 operations after warm-up and requires zero. It skips under ASan/TSan, where the sanitizer interceptors make exact counts unreliable.
 - **Determinism.** `scripts/check_determinism.sh` generates one flow, replays it in the debug and release builds with both engines and requires the digests to agree within and across builds.
 - **Tardis-derived flow.** `tests/data/tardis_sample.csv.gz` is the first hour of Binance ETHBTC `incremental_book_L2` for 2026-10-01 (18,774 rows), converted to a flow file with exact integer decimal parsing. The conversion builds synthetic per-level queues from L2 deltas and cancels crossed levels before they can trade, so replay is trade-free; the reference engine's final digest is pinned as `0xea3b4198b591dd6d`.
+
+## Concurrency
+
+The gateway runs the book on one thread and every socket on another. The handoff between them is `lob::SpscRing<T, Capacity>` (`include/lob/spsc_ring.hpp`), a bounded lock-free single-producer/single-consumer ring:
+
+- Capacity is a compile-time power of two, so the slot index is a mask, and the storage is an inline byte buffer decided at construction. `try_push` and `try_pop` report full or empty instead of waiting, never allocate, never throw and never enter the kernel.
+- The two indices live on separate cache lines (128 bytes, the measured M-series line and its prefetched pair), and each side caches the other side's index, so the common full/empty decision reads only thread-private memory.
+- Ordering uses acquire and release only: the producer publishes a slot with a release store of the tail, the consumer takes it with an acquire load and frees the slot with a release store of the head. There is no sequential consistency and no fence.
+
+`tests/test_spsc_ring.cpp` pins the API, the FIFO order, the exact-full boundary, the wrap behaviour and the cache-line layout, and runs a two-thread order-and-content check. The `tsan` preset runs the whole suite under ThreadSanitizer as a required CI check. Two tools exercise the ring at volume:
+
+```sh
+./build/release/spsc_stress --messages 100000000
+./build/release/spsc_latency --messages 1000000
+cmake --preset tsan && cmake --build --preset tsan && ctest --preset tsan
+```
+
+`spsc_stress` moves 100 million messages through a 4,096-entry ring and checks strict sequence order and a payload bijection on every one. `spsc_latency` measures the enqueue-to-`on_accept` handoff through a deliberately small (256-entry) ring and prints p50/p90/p99/p99.9/max with the same timer-mode policy as the benchmark harness. Ring latency is published only from an idle-machine run:
+
+<!-- RING-LATENCY -->
+
+Numbers pending an idle-machine run.
 
 ## Design
 
@@ -90,6 +143,75 @@ flowchart LR
 ```
 
 The fast engine allocates its pool, id map and ladder once, when the book is constructed. An order id hashes to a pool index; the pool node sits in its price level's intrusive FIFO; the ladder owns the levels and answers best-price queries from the bitmap. Adds, cancels, modifies and matches therefore touch only pre-allocated memory.
+
+## Python
+
+`python/pylob` binds the same C++ engine with pybind11; no matching logic is reimplemented in Python. The repository root is a uv workspace whose only member is `pylob`, so one command builds and installs it:
+
+```sh
+uv sync --frozen
+uv run python -c "import pylob; print(pylob.OrderBook)"
+```
+
+The binding exposes `Config`, `OrderBook`, the `Side`, `OrderType` and `RejectReason` enums, a recording listener, a flow reader and a two-engine replay, with the same event order and digest as the C++ API. A Python listener is a Python call per event with the GIL held, which is convenient for experiments and not a latency measurement tool.
+
+Replay a flow and plot the bid/ask spread:
+
+```sh
+./build/release/lobsim gen --orders 20000 --seed 7 --out build/release/spread.bin
+uv run python examples/replay_spread.py --flow build/release/spread.bin --out build/release/spread.png
+```
+
+The example replays the flow record by record through `pylob.OrderBook`, samples the best bid and ask every 100 records and writes a PNG with matplotlib, which the repository environment installs through the `plot` group.
+
+## Exchange simulator
+
+Phase 3 splits the stack into processes that speak the wire protocol of `docs/architecture.md` §14 over TCP, plus one UDP hop for market data (decision C54):
+
+```mermaid
+flowchart LR
+  loadgen["lob_loadgen<br/>N order-entry sessions"] -->|"NewOrder / Cancel / Modify<br/>TCP 9000"| network["gateway<br/>network thread"]
+  network -->|"SPSC commands"| engine["gateway<br/>engine thread<br/>OrderBook + listener"]
+  engine -->|"SPSC responses"| network
+  engine -->|"SPSC market data<br/>seq 1, 2, 3, ..."| network
+  network -->|"BookUpdate / Trade<br/>TCP 9001"| publisher["lob_publisher"]
+  publisher -->|"UDP datagrams, ≤ 1200 B"| mdlisten["lob_md_listen<br/>feed handler + local book"]
+  mdlisten -.->|"RecoveryRequest<br/>TCP 9002"| publisher
+```
+
+Three long-running processes plus the load generator as a client:
+
+| Process | Executable | Ports | Threads |
+| --- | --- | --- | --- |
+| Gateway | `lob_gateway` | order entry TCP 9000, market-data stream TCP 9001 | one network thread, one engine thread |
+| Publisher | `lob_publisher` | connects to 9001, UDP fan-out to every `--udp-dest`, recovery TCP 9002 | one poll loop |
+| Feed handler | `lob_md_listen` | UDP receive 9100, connects to recovery 9002 | one thread |
+| Load generator | `lob_loadgen` | connects to 9000, optional UDP monitor and recovery | one send loop, one monitor thread when it counts market data |
+
+One connection is one session. The engine order id is `(session_id << 40) | client_order_id`, responses carry the client's own order id back, and the engine publishes every book update and trade on the event stream with a gap-free sequence number that starts at 1. The publisher keeps the last 65,536 messages by default (up to 1,048,576) and answers a recovery request with the frames it still holds, or with a `SequenceReset` when they have aged out. The feed handler buffers out-of-order frames while a gap is open, asks for the missing range and applies the recovered frames in sequence. When the stream has had no event for 100 ms the gateway emits a `Heartbeat` carrying the last published sequence; the publisher forwards it like any other message, and the feed handler treats a heartbeat above its last seen sequence as a gap, so a lost final datagram is still detected and recovered.
+
+The Compose demo from the Phase 3 definition of done builds one Linux image and runs the whole topology on a private bridge network:
+
+```sh
+docker compose up -d --build
+docker compose run --rm loadgen --orders 1000000 --report /out/w2w.json
+docker compose down
+```
+
+`scripts/compose_demo.sh` runs those three commands and prints the load generator's report. The same topology runs natively on loopback, with free ports picked by the script, two sessions and 50,000 orders; it fails unless the report shows zero unanswered orders and zero unrecovered market-data gaps:
+
+```sh
+scripts/e2e_local.sh build/release/apps/gateway/lob_gateway \
+  build/release/apps/publisher/lob_publisher \
+  build/release/apps/md_listen/lob_md_listen \
+  build/release/apps/loadgen/lob_loadgen 50000
+```
+
+`lob_loadgen` sends orders in a closed loop, times each send to its first response with an HDR histogram and writes a JSON report with the latency percentiles, unanswered-order count and market-data gap counters. Wire-to-wire latency that includes both processes and the kernel loopback path is published only from `scripts/run_phase23_benchmarks.sh` on an idle machine; Docker figures are never published as latency results:
+
+<!-- W2W-LATENCY -->
+
+Numbers pending an idle-machine run.
 
 ## Build and run
 
@@ -153,11 +275,15 @@ Publishable latency and throughput numbers come from `scripts/run_benchmarks.sh`
 
 ## Limitations
 
-- Single instrument, single thread. There is no concurrency, symbol routing or multi-book support.
+- Single instrument. There is no symbol routing or multi-book support, and the engine itself is single-threaded: the gateway gives it one dedicated thread and keeps every socket on another.
+- No logon or authentication. One accepted connection is one session and there is no session-resume message, so a client that reconnects starts a new session with a new id.
+- Resting orders survive a client disconnect. There is no mass cancel and no cancel-on-disconnect in v2.0, so a crashed client leaves its orders in the book.
+- Market data is unicast UDP by default: the publisher fans out to its `--udp-dest` list and multicast is an opt-in extra destination that nothing joins. There are no snapshots, so a late subscriber starts at the current sequence and builds its book from later updates.
+- No self-trade prevention.
+- No persistence and no stop orders.
 - The Tardis flow is synthetic: it reconstructs per-level queues from L2 deltas, so it has no order-level queue position and is not real order flow. It is used for determinism and cross-engine checks, not for market-impact claims.
 - Timing is macOS-specific. There is no core isolation or thread pinning, and the ~41.7 ns counter step means sub-step operations are only measurable in batches. Reported numbers belong to the machine and flags that produced them.
-- No self-trade prevention.
-- Phase 2 features are not included: FOK, post-only and stop orders, persistence, networking and language bindings.
+- Docker is a correctness and demo environment, not a latency environment: numbers measured inside a container are never published as results.
 - The array price ladder covers at most 2^24 ticks per book.
 
 ## License
