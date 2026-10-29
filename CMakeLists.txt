@@ -78,6 +78,9 @@ add_library(lob_net STATIC ${LOB_NET_SOURCES})
 target_include_directories(lob_net PUBLIC
                            "${CMAKE_CURRENT_SOURCE_DIR}"
                            "${CMAKE_CURRENT_SOURCE_DIR}/include")
+# The gateway (net/gateway) drives the engine directly, so the protocol library
+# carries that dependency; clients of lob_net get the engine headers too.
+target_link_libraries(lob_net PUBLIC lob)
 
 # Phase 3 executables (gateway, publisher, load generator) each live in
 # apps/<name>/ with its own CMakeLists.txt linking lob and lob_net; this hook
