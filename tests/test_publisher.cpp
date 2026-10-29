@@ -533,11 +533,11 @@ TEST(PublisherRecovery, SendsSequenceResetWhenTheStartIsGone) {
   EXPECT_EQ(reset.next_seq, 13U);  // 20 held messages, capacity 8 -> oldest is 13
   EXPECT_EQ(publisher.stats().sequence_resets, 1U);
 
-  // Recovery resumes from the reset sequence.
-  ASSERT_TRUE(client.send_request(13, 15, 2));
-  ASSERT_TRUE(drive_recovery(publisher, client, [&] { return client.frames().size() >= 4; }));
-  ASSERT_EQ(client.frames().size(), 4U);
-  for (std::size_t index = 0; index < 3; ++index) {
+  // Recovery resumes from the reset sequence. A full store window is allowed.
+  ASSERT_TRUE(client.send_request(13, 20, 2));
+  ASSERT_TRUE(drive_recovery(publisher, client, [&] { return client.frames().size() >= 9; }));
+  ASSERT_EQ(client.frames().size(), 9U);
+  for (std::size_t index = 0; index < 8; ++index) {
     EXPECT_EQ(client.frames()[1 + index], expected[12 + index]);
   }
 }
