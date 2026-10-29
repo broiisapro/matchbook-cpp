@@ -120,9 +120,24 @@ cmake --preset tsan && cmake --build --preset tsan && ctest --preset tsan
 
 `spsc_stress` moves 100 million messages through a 4,096-entry ring and checks strict sequence order and a payload bijection on every one. `spsc_latency` measures the enqueue-to-`on_accept` handoff through a deliberately small (256-entry) ring and prints p50/p90/p99/p99.9/max with the same timer-mode policy as the benchmark harness. Ring latency is published only from an idle-machine run:
 
-<!-- RING-LATENCY -->
+| Statistic | ns |
+| --- | --- |
+| p50 | 196 |
+| p90 | 213 |
+| p99 | 705 |
+| p99.9 | 84,543 |
+| max | 182,271 |
 
-Numbers pending an idle-machine run.
+| Field | Value |
+| --- | --- |
+| Events per run | 1,000,000 |
+| Samples (median run) | 2,462 |
+| Throughput (median run) | 4,898,954 events/s |
+| p50 across runs | 187–206 ns |
+
+Apple M5 (Mac17,2, arm64, 32 GiB), macOS 27.0.1 (26A434), Apple clang 21.0.0 (clang-2100.3.34.2), `-O3 -DNDEBUG`, `batch256` sampling, 5 runs of 1,000,000 events, 2026-10-29 (UTC), commit `3acb776`; 1-minute load average 1.97 before the run and 3.21 after it. Latency in nanoseconds, median run of the five.
+
+Each figure is one event's full handoff — the producer's push into a 256-entry ring, the consumer waking, popping it, applying it to the book and stamping `on_accept` — so it is a cross-thread trip through memory and the scheduler, not an instruction count, and it excludes the network entirely. Every sample is the mean over 256 accepted events (`batch256`), so one descheduling inside a batch is spread across it instead of being reported at its true size: the tail of a single event is worse than the p99.9 and max columns suggest, and they are quoted as batch means, never as a worst case. The median's spread over five runs (187–206 ns) is the honest precision of a machine with no core pinning; a run-to-run difference under about 10% is noise.
 
 ## Design
 
@@ -214,9 +229,22 @@ scripts/e2e_local.sh build/release/apps/gateway/lob_gateway \
 
 `lob_loadgen` sends orders in a closed loop, times each send to its first response with an HDR histogram and writes a JSON report with the latency percentiles, unanswered-order count and market-data gap counters. Wire-to-wire latency that includes both processes and the kernel loopback path is published only from `scripts/run_phase23_benchmarks.sh` on an idle machine; Docker figures are never published as latency results:
 
-<!-- W2W-LATENCY -->
+| Statistic | 1 session | 4 sessions |
+| --- | --- | --- |
+| p50 | 25,679 | 35,711 |
+| p50 across runs | 25,263–26,127 ns | 34,303–37,311 ns |
+| p90 | 45,823 | 63,231 |
+| p99 | 211,583 | 101,951 |
+| p99.9 | 215,935 | 137,343 |
+| max | 2,887,679 | 3,186,687 |
+| Requests/s (median run) | 30,172 | 94,578 |
+| Orders per run | 200,000 | 200,000 |
+| Unrecovered market-data gaps | 0 | 0 |
+| Runs | 5 | 5 |
 
-Numbers pending an idle-machine run.
+Apple M5 (Mac17,2, arm64, 32 GiB), macOS 27.0.1 (26A434), Apple clang 21.0.0 (clang-2100.3.34.2), `-O3 -DNDEBUG`, per-request `std::chrono::steady_clock` timing (the ring table's `batch256` does not apply here), 5 runs of 200,000 orders at 1 session and 5 at 4 sessions, 2026-10-29 (UTC), commit `3acb776`; 1-minute load average 1.97 before the run and 3.21 after it. Latency in nanoseconds, median run per session count.
+
+Almost all of the 25.7 µs median is spent outside the engine: two syscall pairs over the kernel's loopback path, waking the gateway's network thread and waking the load generator's poll loop. The matching engine's own share is the ring handoff above — roughly 200 ns, so the figure measures the process model and the operating system, not matching. Four sessions raise the median to 35.7 µs, because the gateway's single network and engine threads serve four clients in turn and a request can wait behind up to three others, but they improve both the tail and the throughput: p99 falls from 212 µs to 102 µs and throughput rises from 30,172 to 94,578 requests/s, because with several requests in flight neither process sits idle long enough to be descheduled between a request and its response, and the 2.9 ms max at one session is what one scheduling stall looks like end to end. The loop is closed (one request in flight per session), so these percentiles describe an interactive client's steady state, not a saturated system, and they understate latency under load.
 
 ## Build and run
 
